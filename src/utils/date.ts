@@ -204,3 +204,25 @@ export function getMonthKey(
   const p = getParts(date);
   return `${p.year}${separator}${pad(p.month)}`;
 }
+
+/**
+ * 判断两个日期是否为同一天
+ * @param date1 日期1
+ * @param date2 日期2
+ * @returns 同一天返回true，否则返回false
+ * @example
+ * isSameDay('2024-06-15', '2024-06-15') // true
+ * isSameDay('2024-06-15', new Date()) // 取决于今天是否是2024-06-15
+ */
+export function isSameDay(
+  date1: string | Date | number,
+  date2: string | Date | number,
+): boolean {
+  const d1 = parseDate(date1);
+  const d2 = parseDate(date2);
+  return (
+    d1.getFullYear() === d2.getFullYear() &&
+    d1.getMonth() === d2.getMonth() &&
+    d1.getDate() === d2.getDate()
+  );
+}

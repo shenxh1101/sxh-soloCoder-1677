@@ -233,7 +233,7 @@ export const useOrderStore = create<OrderState>((set, get) => ({
   getSelectionReminders: (orderId: string) => {
     const reminders = get().selectionReminders[orderId] || [];
     return [...reminders].sort(
-      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
     );
   },
 
@@ -244,13 +244,37 @@ export const useOrderStore = create<OrderState>((set, get) => ({
       id: `svc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
       createdAt: now,
     };
-    const { additionalServices } = get();
+    const { additionalServices, orders } = get();
     const existing = additionalServices[service.orderId] || [];
     const updated = {
       ...additionalServices,
       [service.orderId]: [...existing, newService],
     };
-    set({ additionalServices: updated });
+
+    const typeText = service.type === 'additional_retouch' ? '精修' : '入册';
+    const remark = `【加修】客户追加${typeText}${service.quantity}张，费用¥${service.fee}。${service.note ? `备注：${service.note}` : ''}`;
+
+    const orderIdx = orders.findIndex((o) => o.id === service.orderId);
+    let updatedOrders = orders;
+    if (orderIdx !== -1) {
+      const targetOrder = orders[orderIdx];
+      const statusRecord: StatusRecord = {
+        status: targetOrder.status,
+        updatedAt: now,
+        operatorId: service.operatorId,
+        remark,
+      };
+      const newHistory = [...targetOrder.statusHistory, statusRecord];
+      const updatedOrder: Order = {
+        ...targetOrder,
+        statusHistory: newHistory,
+      };
+      updatedOrders = [...orders];
+      updatedOrders[orderIdx] = updatedOrder;
+      persistOrders(updatedOrders);
+    }
+
+    set({ additionalServices: updated, orders: updatedOrders });
     additionalServicesStorage.set(updated);
   },
 

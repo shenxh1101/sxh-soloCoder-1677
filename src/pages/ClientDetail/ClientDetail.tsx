@@ -300,8 +300,8 @@ export default function ClientDetail() {
     addSelectionReminder({
       orderId: order.id,
       channel: reminderChannel,
-      senderId: currentUser.id,
-      senderName: currentUser.name,
+      operatorId: currentUser.id,
+      operatorName: currentUser.name,
       note: reminderNote || undefined,
     });
     setReminderModalOpen(false);
@@ -369,7 +369,12 @@ export default function ClientDetail() {
           body * { visibility: hidden; }
           #selection-confirm-print, #selection-confirm-print * { visibility: visible; }
           #selection-confirm-print { position: absolute; left: 0; top: 0; width: 100%; }
+          #selection-confirm-print { box-shadow: none !important; border: none !important; padding: 0 !important; }
+          #selection-confirm-print img { display: block !important; }
+          .print-only { display: block !important; }
           .no-print { display: none !important; }
+          body { background: white !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+          @page { margin: 15mm; size: A4 portrait; }
         }
       `}</style>
       <Card className="p-5 overflow-hidden relative">
@@ -651,7 +656,7 @@ export default function ClientDetail() {
                               )}>
                                 {r.channel === 'wechat' ? '微信' : r.channel === 'phone' ? '电话' : r.channel === 'sms' ? '短信' : '其他'}
                               </span>
-                              <span className="text-sm text-darkGray font-medium">{r.senderName}</span>
+                              <span className="text-sm text-darkGray font-medium">{r.operatorName}</span>
                               <span className="text-xs text-gray-400">{formatDate(r.createdAt, 'datetime')}</span>
                             </div>
                             {r.note && (
@@ -919,6 +924,26 @@ export default function ClientDetail() {
               )}
 
               <Card id="selection-confirm-print" className="p-5">
+                <div className="print-only border-b-2 border-darkGray/20 pb-4 mb-6 hidden print:block">
+                  <div className="text-center mb-4">
+                    <h1 className="text-3xl font-bold text-darkGray mb-2" style={{ fontFamily: "'Noto Serif SC', serif" }}>选片交付确认单</h1>
+                    <p className="text-sm text-gray-500">婚纱摄影工作室 · 客户选片确认凭证</p>
+                  </div>
+                  <div className="grid grid-cols-3 gap-4 text-sm">
+                    <div>
+                      <p className="text-gray-500">客户姓名</p>
+                      <p className="font-semibold text-darkGray">{client?.name} & {client?.partnerName}</p>
+                    </div>
+                    <div>
+                      <p className="text-gray-500">订单号</p>
+                      <p className="font-semibold font-mono text-darkGray">{order.id}</p>
+                    </div>
+                    <div>
+                      <p className="text-gray-500">确认时间</p>
+                      <p className="font-semibold text-darkGray">{selectionConfirm ? formatDate(selectionConfirm.confirmedAt, 'datetime') : '待确认'}</p>
+                    </div>
+                  </div>
+                </div>
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
                   <div className="flex items-center gap-2">
                     <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-champagne/30 to-warmPink/50 flex items-center justify-center">
@@ -978,7 +1003,7 @@ export default function ClientDetail() {
                             </span>
                           </h4>
                         </div>
-                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
+                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 print:grid-cols-8 gap-3">
                           {(selectionConfirm ? selectionConfirm.albumPhotoIds.map((pid) => photos.find((p) => p.id === pid)).filter(Boolean) : albumPhotos).map((photo, idx) => (
                             <ConfirmPhotoItem key={photo!.id} photo={photo!} index={idx} />
                           ))}
@@ -997,7 +1022,7 @@ export default function ClientDetail() {
                             </span>
                           </h4>
                         </div>
-                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
+                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 print:grid-cols-8 gap-3">
                           {(selectionConfirm ? selectionConfirm.retouchPhotoIds.map((pid) => photos.find((p) => p.id === pid)).filter(Boolean) : retouchPhotos).map((photo, idx) => (
                             <ConfirmPhotoItem key={photo!.id} photo={photo!} index={idx} />
                           ))}
@@ -1011,14 +1036,17 @@ export default function ClientDetail() {
                           <MessageSquare className="w-4 h-4 text-roseGold" />
                           备注说明
                         </h4>
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                          {(selectionConfirm ? selectionConfirm.notes : summary.notes).map((n) => {
+                        <div className="grid grid-cols-1 md:grid-cols-2 print:grid-cols-1 gap-3">
+                          {(selectionConfirm ? selectionConfirm.notes : summary.notes).map((n, idx) => {
                             const p = photos.find((ph) => ph.id === n.photoId);
                             return (
                               <div
                                 key={n.photoId}
                                 className="flex items-start gap-3 rounded-xl bg-warmPink/20 p-3"
                               >
+                                <div className="shrink-0 w-6 h-6 rounded-full bg-roseGold/20 text-roseGold flex items-center justify-center text-xs font-bold">
+                                  {idx + 1}
+                                </div>
                                 {p && (
                                   <img
                                     src={p.thumbnail}
@@ -1902,8 +1930,12 @@ function ConfirmPhotoItem({
       >
         {photo.mark === 'album' ? '入册' : '精修'}
       </div>
+      <div className="hidden print:block mt-1 text-center">
+        <p className="text-[10px] font-mono text-darkGray">{String(index + 1).padStart(3, '0')}</p>
+        <p className="text-[8px] font-mono text-gray-500 truncate">{photo.filename}</p>
+      </div>
       {photo.note && (
-        <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-11/12 z-10 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+        <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-11/12 z-10 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none no-print">
           <div className="bg-darkGray/90 text-white text-[11px] rounded-lg px-2.5 py-2 shadow-lg whitespace-normal">
             <div className="absolute -top-1.5 left-1/2 -translate-x-1/2 w-3 h-3 bg-darkGray/90 rotate-45" />
             {photo.note}

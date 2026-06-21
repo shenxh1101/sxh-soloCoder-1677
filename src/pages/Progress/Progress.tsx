@@ -24,7 +24,7 @@ import { useOrderStore } from '@/store/useOrderStore';
 import { useClientStore } from '@/store/useClientStore';
 import { useAuthStore } from '@/store/useAuthStore';
 import { STATUS_META } from '@/mock/seed';
-import { formatDate, daysBetween } from '@/utils/date';
+import { formatDate, daysBetween, isSameDay } from '@/utils/date';
 import { cn } from '@/lib/utils';
 import type { ProductionStatus } from '@/types';
 
@@ -143,28 +143,33 @@ export default function Progress() {
     return inProgress
       .map((order) => {
         const client = getClient(order.clientId);
-        const lastRecord =
-          order.statusHistory[order.statusHistory.length - 1];
-        const assigneeId = lastRecord?.operatorId || order.consultantId;
+        const lastStatusRecord = order.statusHistory.length > 0 ? order.statusHistory[order.statusHistory.length - 1] : null;
+        const assigneeId = lastStatusRecord?.operatorId || order.consultantId;
         const assignee = getUserById(assigneeId);
 
-        const enteredDate = lastRecord
-          ? new Date(lastRecord.updatedAt)
-          : new Date(order.createdAt);
+        const startDate = lastStatusRecord ? new Date(lastStatusRecord.updatedAt) : new Date();
+        const duration = STANDARD_DURATIONS[order.status as keyof typeof STANDARD_DURATIONS] || 5;
+        const dueDate = new Date(startDate.getTime() + duration * 24 * 60 * 60 * 1000);
+        const daysOverdue = Math.floor((new Date().getTime() - dueDate.getTime()) / (24 * 60 * 60 * 1000));
+        const isOverdue = daysOverdue > 0;
+        const isDueToday = isSameDay(dueDate, new Date());
+
+        const enteredDate = startDate;
         const daysStayed = daysBetween(
-          lastRecord?.updatedAt || order.createdAt
+          lastStatusRecord?.updatedAt || order.createdAt
         );
-        const standardDays = STANDARD_DURATIONS[order.status] || 5;
-        const isOverdue = daysStayed > standardDays;
+        const standardDays = duration;
+        const estimatedDate = dueDate;
+        const daysRemaining = Math.ceil((dueDate.getTime() - new Date().getTime()) / (24 * 60 * 60 * 1000));
 
-        const estimatedDate = new Date(enteredDate);
-        estimatedDate.setDate(estimatedDate.getDate() + standardDays);
-
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        const estDateOnly = new Date(estimatedDate);
-        estDateOnly.setHours(0, 0, 0, 0);
-        const isDueToday = estDateOnly.getTime() === today.getTime();
+        let dueGroup: 'overdue' | 'today' | 'upcoming';
+        if (isOverdue) {
+          dueGroup = 'overdue';
+        } else if (isDueToday) {
+          dueGroup = 'today';
+        } else {
+          dueGroup = 'upcoming';
+        }
 
         return {
           order,
@@ -177,6 +182,10 @@ export default function Progress() {
           isOverdue,
           estimatedDate,
           isDueToday,
+          dueDate,
+          daysOverdue,
+          daysRemaining,
+          dueGroup,
         };
       })
       .filter((item) => {
@@ -190,16 +199,69 @@ export default function Progress() {
       });
   }, [orders, todoSearch, todoAssignee, todoOverdueOnly, getClient, getUserById]);
 
-  const groupedByAssignee = useMemo(() => {
-    const groups: Record<string, typeof todoOrderItems> = {};
+  type TodoItem = typeof todoOrderItems[number];
+  type GroupedByDate = {
+    overdue: TodoItem[];
+    today: TodoItem[];
+    upcoming: Record<string, TodoItem[]>;
+  };
+  type GroupedByAssignee = {
+    assigneeId: string;
+    items: TodoItem[];
+    groupedByDate: GroupedByDate;
+    counts: { overdue: number; today: number; upcoming: number };
+  }[];
+
+  const groupedByAssignee = useMemo<GroupedByAssignee>(() => {
+    const groups: Record<string, TodoItem[]> = {};
     for (const item of todoOrderItems) {
       const key = item.assigneeId;
       if (!groups[key]) groups[key] = [];
       groups[key].push(item);
     }
-    return Object.entries(groups).sort(
-      (a, b) => b[1].length - a[1].length
-    );
+
+    return Object.entries(groups)
+      .sort((a, b) => b[1].length - a[1].length)
+      .map(([assigneeId, items]) => {
+        const groupedByDate: GroupedByDate = {
+          overdue: [],
+          today: [],
+          upcoming: {},
+        };
+
+        for (const item of items) {
+          if (item.dueGroup === 'overdue') {
+            groupedByDate.overdue.push(item);
+          } else if (item.dueGroup === 'today') {
+            groupedByDate.today.push(item);
+          } else {
+            const dateKey = formatDate(item.dueDate, 'YYYY-MM-DD');
+            if (!groupedByDate.upcoming[dateKey]) {
+              groupedByDate.upcoming[dateKey] = [];
+            }
+            groupedByDate.upcoming[dateKey].push(item);
+          }
+        }
+
+        groupedByDate.overdue.sort((a, b) => a.daysOverdue - b.daysOverdue);
+        groupedByDate.today.sort((a, b) => a.dueDate.getTime() - b.dueDate.getTime());
+
+        const upcomingCount = Object.values(groupedByDate.upcoming).reduce(
+          (sum, arr) => sum + arr.length,
+          0
+        );
+
+        return {
+          assigneeId,
+          items,
+          groupedByDate,
+          counts: {
+            overdue: groupedByDate.overdue.length,
+            today: groupedByDate.today.length,
+            upcoming: upcomingCount,
+          },
+        };
+      });
   }, [todoOrderItems]);
 
   const todoStats = useMemo(() => {
@@ -505,9 +567,114 @@ export default function Progress() {
                 animate="show"
                 className="space-y-6"
               >
-                {groupedByAssignee.map(([assigneeId, items]) => {
+                {groupedByAssignee.map(({ assigneeId, items, groupedByDate, counts }) => {
                   const assignee = getUserById(assigneeId);
                   if (!assignee) return null;
+
+                  const renderOrderCard = (item: TodoItem) => {
+                    const {
+                      order,
+                      client,
+                      daysStayed,
+                      standardDays,
+                      isOverdue,
+                      estimatedDate,
+                      enteredDate,
+                      daysOverdue,
+                      daysRemaining,
+                      dueGroup,
+                    } = item;
+
+                    let borderClass = '';
+                    let badgeLabel = '';
+                    let badgeClass = '';
+
+                    if (dueGroup === 'overdue') {
+                      borderClass = 'border-l-4 border-coralRed';
+                      badgeLabel = `超期${daysOverdue}天`;
+                      badgeClass = 'bg-red-100 text-red-600';
+                    } else if (dueGroup === 'today') {
+                      borderClass = 'border-l-4 border-champagne';
+                      badgeLabel = '今日到期';
+                      badgeClass = 'bg-amber-100 text-amber-700';
+                    } else {
+                      borderClass = 'border-l-4 border-forestGreen';
+                      badgeLabel = `还剩${daysRemaining}天`;
+                      badgeClass = 'bg-green-100 text-green-700';
+                    }
+
+                    return (
+                      <div
+                        key={order.id}
+                        className={cn(
+                          'relative flex flex-col sm:flex-row sm:items-center gap-3 p-4 rounded-xl border transition-all bg-white',
+                          borderClass,
+                          isOverdue ? 'border-red-200/60' : 'border-warmPink/20'
+                        )}
+                      >
+                        <div className="absolute top-3 right-3">
+                          <span className={cn(
+                            'px-2 py-0.5 rounded-md text-xs font-medium',
+                            badgeClass
+                          )}>
+                            {badgeLabel}
+                          </span>
+                        </div>
+                        <div className="flex-1 min-w-0 pr-16">
+                          <div className="flex items-center gap-2 mb-1">
+                            <span className="text-base font-bold text-darkGray truncate">
+                              {client?.name || '未知客户'}
+                            </span>
+                            {client?.partnerName && (
+                              <span className="text-sm text-gray-400">
+                                & {client.partnerName}
+                              </span>
+                            )}
+                            <span className="text-xs text-gray-400 truncate">
+                              {order.packageName}
+                            </span>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2 text-sm">
+                            <StatusBadge status={order.status} size="sm" />
+                            <span className="text-gray-400">
+                              进入状态：{formatDate(enteredDate, 'short')}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-3 shrink-0">
+                          <div
+                            className={cn(
+                              'flex items-center gap-1 px-2.5 py-1 rounded-lg border text-sm font-medium',
+                              getStayBg(daysStayed, standardDays),
+                              getStayColor(daysStayed, standardDays)
+                            )}
+                          >
+                            <Clock className="w-3.5 h-3.5" />
+                            {daysStayed}天
+                          </div>
+                          <div className="flex items-center gap-1 text-sm text-gray-500">
+                            <CalendarClock className="w-3.5 h-3.5" />
+                            {formatDate(estimatedDate, 'short')}
+                          </div>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => {
+                              const clientExists = getClient(order.clientId);
+                              if (clientExists) {
+                                navigate(`/clients/${order.clientId}`);
+                              }
+                            }}
+                          >
+                            查看详情
+                          </Button>
+                        </div>
+                      </div>
+                    );
+                  };
+
+                  const sortedUpcomingDates = Object.keys(groupedByDate.upcoming).sort();
+
                   return (
                     <motion.div key={assigneeId} variants={fadeInUp}>
                       <Card>
@@ -535,86 +702,47 @@ export default function Progress() {
                             </div>
                           </div>
                         </div>
-                        <div className="p-5 space-y-3">
-                          {items.map(
-                            ({
-                              order,
-                              client,
-                              daysStayed,
-                              standardDays,
-                              isOverdue,
-                              estimatedDate,
-                              isDueToday,
-                              enteredDate,
-                            }) => (
-                              <div
-                                key={order.id}
-                                className={cn(
-                                  'flex flex-col sm:flex-row sm:items-center gap-3 p-4 rounded-xl border transition-all',
-                                  isOverdue
-                                    ? 'bg-red-50/50 border-red-200/60'
-                                    : 'bg-gray-50/50 border-warmPink/20'
-                                )}
-                              >
-                                <div className="flex-1 min-w-0">
-                                  <div className="flex items-center gap-2 mb-1">
-                                    <span className="text-base font-bold text-darkGray truncate">
-                                      {client?.name || '未知客户'}
-                                    </span>
-                                    {client?.partnerName && (
-                                      <span className="text-sm text-gray-400">
-                                        & {client.partnerName}
-                                      </span>
-                                    )}
-                                    <span className="text-xs text-gray-400 truncate">
-                                      {order.packageName}
-                                    </span>
-                                  </div>
-                                  <div className="flex flex-wrap items-center gap-2 text-sm">
-                                    <StatusBadge status={order.status} size="sm" />
-                                    <span className="text-gray-400">
-                                      进入状态：{formatDate(enteredDate, 'short')}
-                                    </span>
-                                  </div>
-                                </div>
-                                <div className="flex items-center gap-3 shrink-0">
-                                  <div
-                                    className={cn(
-                                      'flex items-center gap-1 px-2.5 py-1 rounded-lg border text-sm font-medium',
-                                      getStayBg(daysStayed, standardDays),
-                                      getStayColor(daysStayed, standardDays)
-                                    )}
-                                  >
-                                    <Clock className="w-3.5 h-3.5" />
-                                    {daysStayed}天
-                                  </div>
-                                  <div className="flex items-center gap-1 text-sm text-gray-500">
-                                    <CalendarClock className="w-3.5 h-3.5" />
-                                    {formatDate(estimatedDate, 'short')}
-                                  </div>
-                                  {isOverdue && (
-                                    <span className="flex items-center gap-1 px-2 py-0.5 rounded-md bg-red-100 text-red-600 text-xs font-medium">
-                                      <AlertTriangle className="w-3 h-3" />
-                                      超期
-                                    </span>
-                                  )}
-                                  {isDueToday && !isOverdue && (
-                                    <span className="px-2 py-0.5 rounded-md bg-amber-100 text-amber-700 text-xs font-medium">
-                                      今日到期
-                                    </span>
-                                  )}
-                                  <Button
-                                    size="sm"
-                                    variant="ghost"
-                                    onClick={() =>
-                                      navigate(`/clients/${order.clientId}`)
-                                    }
-                                  >
-                                    查看详情
-                                  </Button>
-                                </div>
+                        <div className="p-5 space-y-5">
+                          {counts.overdue > 0 && (
+                            <div>
+                              <h4 className="text-sm font-semibold text-coralRed mb-3 flex items-center gap-2">
+                                🔴 已超期 <span className="text-gray-400 font-normal">({counts.overdue}单)</span>
+                              </h4>
+                              <div className="space-y-3">
+                                {groupedByDate.overdue.map(renderOrderCard)}
                               </div>
-                            )
+                            </div>
+                          )}
+
+                          {counts.today > 0 && (
+                            <div>
+                              <h4 className="text-sm font-semibold text-champagne mb-3 flex items-center gap-2">
+                                🟠 今日到期 <span className="text-gray-400 font-normal">({counts.today}单)</span>
+                              </h4>
+                              <div className="space-y-3">
+                                {groupedByDate.today.map(renderOrderCard)}
+                              </div>
+                            </div>
+                          )}
+
+                          {counts.upcoming > 0 && (
+                            <div>
+                              <h4 className="text-sm font-semibold text-forestGreen mb-3 flex items-center gap-2">
+                                🟢 后续日期 <span className="text-gray-400 font-normal">({counts.upcoming}单)</span>
+                              </h4>
+                              <div className="space-y-4">
+                                {sortedUpcomingDates.map((dateKey) => (
+                                  <div key={dateKey}>
+                                    <h5 className="text-xs text-gray-500 mb-2 font-medium">
+                                      {formatDate(dateKey, 'date')}
+                                    </h5>
+                                    <div className="space-y-3">
+                                      {groupedByDate.upcoming[dateKey].map(renderOrderCard)}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
                           )}
                         </div>
                       </Card>
