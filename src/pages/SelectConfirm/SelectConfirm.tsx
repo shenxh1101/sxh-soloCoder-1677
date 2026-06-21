@@ -21,6 +21,7 @@ import { Badge } from '@/components/ui/Badge';
 import { usePhotoStore } from '@/store/usePhotoStore';
 import { useOrderStore } from '@/store/useOrderStore';
 import { useClientStore } from '@/store/useClientStore';
+import type { SelectionConfirm } from '@/types';
 import { cn } from '@/lib/utils';
 
 export default function SelectConfirm() {
@@ -29,6 +30,9 @@ export default function SelectConfirm() {
   const getPhotos = usePhotoStore((s) => s.getPhotos);
   const getSelectionSummary = usePhotoStore((s) => s.getSelectionSummary);
   const orders = useOrderStore((s) => s.orders);
+  const updateStatus = useOrderStore((s) => s.updateStatus);
+  const saveSelectionConfirm = useOrderStore((s) => s.saveSelectionConfirm);
+  const getSelectionConfirm = useOrderStore((s) => s.getSelectionConfirm);
   const getClient = useClientStore((s) => s.getClient);
 
   const order = useMemo(() => orders.find((o) => o.selectToken === token), [orders, token]);
@@ -45,14 +49,35 @@ export default function SelectConfirm() {
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
 
+  const existingConfirm = order ? getSelectionConfirm(order.id) : undefined;
+  const alreadyConfirmed = !!existingConfirm && order?.status !== 'pending_selection';
+
   const albumOverflow = summary && summary.albumCount > (order?.albumCount || 0);
   const retouchOverflow = summary && summary.retouchCount > (order?.retouchCount || 0);
   const canSubmit = agreed && !albumOverflow && !retouchOverflow && !submitting;
 
   const handleSubmit = async () => {
-    if (!canSubmit) return;
+    if (!canSubmit || !order) return;
     setSubmitting(true);
     await new Promise((resolve) => setTimeout(resolve, 1500));
+
+    const confirm: SelectionConfirm = {
+      orderId: order.id,
+      albumPhotoIds: albumPhotos.map((p) => p.id),
+      retouchPhotoIds: retouchPhotos.map((p) => p.id),
+      notes: notesPhotos.map((p) => ({ photoId: p.id, content: p.note! })),
+      confirmedAt: new Date().toISOString(),
+      clientSignature: signature,
+    };
+
+    saveSelectionConfirm(confirm);
+    updateStatus(
+      order.id,
+      'retouching',
+      'system',
+      `客户已确认选片：入册${albumPhotos.length}张，精修${retouchPhotos.length}张，签名：${signature}`
+    );
+
     setSubmitting(false);
     setSubmitted(true);
   };
@@ -73,7 +98,7 @@ export default function SelectConfirm() {
     );
   }
 
-  if (submitted) {
+  if (submitted || alreadyConfirmed) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-warmPink/30 via-white to-champagne/20 flex items-center justify-center p-6">
         <motion.div

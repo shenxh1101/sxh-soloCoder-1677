@@ -1,11 +1,12 @@
 import { create } from 'zustand';
 import { generateMockData } from '../mock/seed';
 import { useLocalStorage } from '../utils/storage';
-import type { Order, ProductionStatus, StatusRecord } from '../types';
+import type { Order, ProductionStatus, StatusRecord, SelectionConfirm } from '../types';
 
 interface OrderState {
   orders: Order[];
   currentOrder: Order | null;
+  selectionConfirms: Record<string, SelectionConfirm>;
   fetchOrders: () => Promise<Order[]>;
   getOrder: (id: string) => Order | undefined;
   getOrderByToken: (token: string) => Order | undefined;
@@ -20,9 +21,12 @@ interface OrderState {
   setSatisfaction: (orderId: string, score: number) => Order | undefined;
   getOrdersByConsultant: (id: string) => Order[];
   getOrdersByStatus: (status: ProductionStatus) => Order[];
+  saveSelectionConfirm: (confirm: SelectionConfirm) => void;
+  getSelectionConfirm: (orderId: string) => SelectionConfirm | undefined;
 }
 
 const ordersStorage = useLocalStorage<Order[]>('order_list');
+const selectionConfirmsStorage = useLocalStorage<Record<string, SelectionConfirm>>('selection_confirms');
 
 const initialOrders = (() => {
   const stored = ordersStorage.get();
@@ -30,6 +34,11 @@ const initialOrders = (() => {
   const { orders } = generateMockData();
   ordersStorage.set(orders);
   return orders;
+})();
+
+const initialSelectionConfirms = (() => {
+  const stored = selectionConfirmsStorage.get();
+  return stored || {};
 })();
 
 function generateOrderId(): string {
@@ -54,6 +63,7 @@ function persistOrders(orders: Order[]) {
 export const useOrderStore = create<OrderState>((set, get) => ({
   orders: initialOrders,
   currentOrder: null,
+  selectionConfirms: initialSelectionConfirms,
 
   fetchOrders: async () => {
     const { orders } = get();
@@ -171,5 +181,15 @@ export const useOrderStore = create<OrderState>((set, get) => ({
 
   getOrdersByStatus: (status: ProductionStatus) => {
     return get().orders.filter((o) => o.status === status);
+  },
+
+  saveSelectionConfirm: (confirm: SelectionConfirm) => {
+    const updated = { ...get().selectionConfirms, [confirm.orderId]: confirm };
+    set({ selectionConfirms: updated });
+    selectionConfirmsStorage.set(updated);
+  },
+
+  getSelectionConfirm: (orderId: string) => {
+    return get().selectionConfirms[orderId];
   },
 }));

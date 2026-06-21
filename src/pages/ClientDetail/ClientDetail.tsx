@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -31,7 +31,6 @@ import {
   Clock,
 } from 'lucide-react';
 import { Card } from '@/components/ui/Card';
-import { Input } from '@/components/ui/Input';
 import { Select, SelectOption } from '@/components/ui/Select';
 import { Button } from '@/components/ui/Button';
 import { Modal } from '@/components/ui/Modal';
@@ -67,19 +66,48 @@ const PHOTO_MARK_LABELS: Record<PhotoMark, { label: string; color: string; bgCol
   reject: { label: '删除', color: '#DC2626', bgColor: '#FEE2E2' },
 };
 
+async function compressImage(file: File, maxWidth: number, quality: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      const ratio = Math.min(maxWidth / img.width, 1);
+      const w = Math.round(img.width * ratio);
+      const h = Math.round(img.height * ratio);
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d')!;
+      ctx.drawImage(img, 0, 0, w, h);
+      URL.revokeObjectURL(url);
+      resolve(canvas.toDataURL('image/jpeg', quality));
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('Failed to load image'));
+    };
+    img.src = url;
+  });
+}
+
 export default function ClientDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { getClient } = useClientStore();
   const { orders, updateStatus, updateOrder } = useOrderStore();
+  const getSelectionConfirm = useOrderStore((s) => s.getSelectionConfirm);
   const { getPhotos, addPhotos, markPhoto, addNote, getSelectionSummary } = usePhotoStore();
   const { getUserById, currentUser } = useAuthStore();
 
   const [activeTab, setActiveTab] = useState<TabKey>('photos');
   const [photoPage, setPhotoPage] = useState(1);
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
-  const [uploadCount, setUploadCount] = useState(20);
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState('');
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [previewUrls, setPreviewUrls] = useState<string[]>([]);
+  const [dragOver, setDragOver] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [statusModalOpen, setStatusModalOpen] = useState(false);
   const [nextStatus, setNextStatus] = useState<ProductionStatus | ''>('');
   const [statusRemark, setStatusRemark] = useState('');
@@ -93,6 +121,7 @@ export default function ClientDetail() {
   const consultant = order ? getUserById(order.consultantId) : undefined;
   const photos = order ? getPhotos(order.id) : [];
   const summary = order ? getSelectionSummary(order.id) : { albumCount: 0, retouchCount: 0, notes: [] };
+  const selectionConfirm = order ? getSelectionConfirm(order.id) : undefined;
 
   const totalPages = Math.max(1, Math.ceil(photos.length / PHOTOS_PER_PAGE));
   const pagedPhotos = useMemo(() => {
@@ -136,33 +165,61 @@ export default function ClientDetail() {
   const albumPhotos = photos.filter((p) => p.mark === 'album');
   const retouchPhotos = photos.filter((p) => p.mark === 'retouch');
 
+  const handleFileSelect = useCallback((files: FileList | File[]) => {
+    const imageFiles = Array.from(files).filter((f) => f.type.startsWith('image/'));
+    if (imageFiles.length === 0) return;
+    setSelectedFiles(imageFiles);
+    const urls = imageFiles.map((f) => URL.createObjectURL(f));
+    setPreviewUrls(urls);
+    setUploadModalOpen(true);
+  }, []);
+
   const handleUpload = async () => {
-    if (!order || uploadCount <= 0) return;
+    if (!order || selectedFiles.length === 0) return;
     setUploading(true);
-    await new Promise((r) => setTimeout(r, 1200));
+    setUploadProgress(`已选 ${selectedFiles.length} 张，正在处理...`);
 
-    const count = uploadCount;
-    const existingCount = photos.length;
-    const newPhotos: {
-      url: string;
-      thumbnail: string;
-      filename: string;
-    }[] = [];
+    try {
+      const existingCount = photos.length;
+      const newPhotos: {
+        url: string;
+        thumbnail: string;
+        filename: string;
+      }[] = [];
 
-    for (let i = 0; i < count; i++) {
-      const seed = `${order.id}_upload_${Date.now()}_${i}`;
-      newPhotos.push({
-        url: `https://picsum.photos/seed/${seed}/600/800`,
-        thumbnail: `https://picsum.photos/seed/${seed}/400/533`,
-        filename: `IMG_${String(1000 + existingCount + i).padStart(4, '0')}.jpg`,
-      });
+      for (let i = 0; i < selectedFiles.length; i++) {
+        setUploadProgress(`正在压缩 ${i + 1} / ${selectedFiles.length}...`);
+        const file = selectedFiles[i];
+        const [url, thumbnail] = await Promise.all([
+          compressImage(file, 800, 0.7),
+          compressImage(file, 400, 0.7),
+        ]);
+        newPhotos.push({
+          url,
+          thumbnail,
+          filename: file.name || `IMG_${String(1000 + existingCount + i).padStart(4, '0')}.jpg`,
+        });
+      }
+
+      setUploadProgress('正在保存...');
+      addPhotos(order.id, newPhotos);
+      const newCount = existingCount + newPhotos.length;
+      updateOrder(order.id, { photosCount: newCount });
+
+      if (order.status === 'pending_photos' && currentUser) {
+        updateStatus(order.id, 'pending_selection', currentUser.id, '原片上传完成，等待客户选片');
+      }
+
+      setUploadProgress('');
+      setUploading(false);
+      setUploadModalOpen(false);
+      setSelectedFiles([]);
+      previewUrls.forEach((u) => URL.revokeObjectURL(u));
+      setPreviewUrls([]);
+    } catch {
+      setUploading(false);
+      setUploadProgress('上传失败，请重试');
     }
-
-    addPhotos(order.id, newPhotos);
-    updateOrder(order.id, { photosCount: existingCount + count });
-    setUploading(false);
-    setUploadModalOpen(false);
-    setUploadCount(20);
   };
 
   const handleCopyLink = async () => {
@@ -333,15 +390,32 @@ export default function ClientDetail() {
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
                 <Card className="lg:col-span-2 p-6 relative overflow-hidden">
                   <div
-                    className="absolute inset-0 opacity-50 cursor-pointer"
-                    onClick={() => setUploadModalOpen(true)}
-                    onDragOver={(e) => e.preventDefault()}
+                    className={cn(
+                      'absolute inset-0 opacity-50 cursor-pointer transition-colors duration-200',
+                      dragOver && 'bg-roseGold/10'
+                    )}
+                    onClick={() => fileInputRef.current?.click()}
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setDragOver(true);
+                    }}
+                    onDragLeave={() => setDragOver(false)}
                     onDrop={(e) => {
                       e.preventDefault();
-                      setUploadModalOpen(true);
+                      e.stopPropagation();
+                      setDragOver(false);
+                      if (e.dataTransfer.files.length > 0) {
+                        handleFileSelect(e.dataTransfer.files);
+                      }
                     }}
                   >
-                    <div className="absolute inset-4 border-2 border-dashed border-roseGold/40 rounded-2xl flex flex-col items-center justify-center hover:border-roseGold hover:bg-roseGold/5 transition-all duration-300">
+                    <div className={cn(
+                      'absolute inset-4 border-2 border-dashed rounded-2xl flex flex-col items-center justify-center transition-all duration-300',
+                      dragOver
+                        ? 'border-roseGold bg-roseGold/10'
+                        : 'border-roseGold/40 hover:border-roseGold hover:bg-roseGold/5'
+                    )}>
                       <motion.div
                         animate={{ y: [0, -6, 0] }}
                         transition={{ duration: 2, repeat: Infinity, ease: 'easeInOut' }}
@@ -503,7 +577,7 @@ export default function ClientDetail() {
                   <Button
                     variant="secondary"
                     size="sm"
-                    onClick={() => setUploadModalOpen(true)}
+                    onClick={() => fileInputRef.current?.click()}
                     className="h-9"
                   >
                     <Upload className="w-4 h-4" />
@@ -520,7 +594,7 @@ export default function ClientDetail() {
                     <p className="text-sm text-gray-500 mb-5">点击上方按钮上传拍摄的原片</p>
                     <Button
                       variant="primary"
-                      onClick={() => setUploadModalOpen(true)}
+                      onClick={() => fileInputRef.current?.click()}
                       className="shadow-lg shadow-roseGold/20"
                     >
                       <Upload className="w-4 h-4" />
@@ -656,6 +730,27 @@ export default function ClientDetail() {
 
           {activeTab === 'confirm' && (
             <div className="space-y-5">
+              {selectionConfirm && (
+                <Card className="p-4 border-forestGreen/30 bg-gradient-to-r from-forestGreen/5 to-transparent">
+                  <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-forestGreen/15 text-forestGreen text-sm font-semibold">
+                      <Check className="w-4 h-4" />
+                      客户已确认选片
+                    </span>
+                    <span className="flex items-center gap-1.5 text-sm text-gray-600">
+                      <Clock className="w-4 h-4 text-forestGreen/60" />
+                      确认时间：{formatDate(selectionConfirm.confirmedAt, 'datetime')}
+                    </span>
+                    {selectionConfirm.clientSignature && (
+                      <span className="flex items-center gap-1.5 text-sm text-gray-600">
+                        <User className="w-4 h-4 text-champagne" />
+                        客户签名：{selectionConfirm.clientSignature}
+                      </span>
+                    )}
+                  </div>
+                </Card>
+              )}
+
               <Card className="p-5">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
                   <div className="flex items-center gap-2">
@@ -670,7 +765,7 @@ export default function ClientDetail() {
                     </div>
                   </div>
                   <div className="flex items-center gap-3 flex-wrap">
-                    {order.statusHistory.some((s) => s.status === 'pending_selection') ? (
+                    {selectionConfirm ? (
                       <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-forestGreen/15 text-forestGreen text-sm font-medium">
                         <Check className="w-4 h-4" />
                         客户已确认
@@ -684,7 +779,7 @@ export default function ClientDetail() {
                   </div>
                 </div>
 
-                {albumPhotos.length === 0 && retouchPhotos.length === 0 ? (
+                {(selectionConfirm ? selectionConfirm.albumPhotoIds.length === 0 && selectionConfirm.retouchPhotoIds.length === 0 : albumPhotos.length === 0 && retouchPhotos.length === 0) ? (
                   <div className="py-16 text-center">
                     <div className="w-20 h-20 rounded-full bg-warmPink/30 flex items-center justify-center mx-auto mb-4">
                       <BookMarked className="w-10 h-10 text-roseGold/50" />
@@ -696,52 +791,52 @@ export default function ClientDetail() {
                   </div>
                 ) : (
                   <div className="space-y-8">
-                    {albumPhotos.length > 0 && (
+                    {(selectionConfirm ? selectionConfirm.albumPhotoIds.map((pid) => photos.find((p) => p.id === pid)).filter(Boolean) : albumPhotos).length > 0 && (
                       <div>
                         <div className="flex items-center justify-between mb-4">
                           <h4 className="font-semibold text-darkGray flex items-center gap-2">
                             <span className="w-2 h-2 rounded-full bg-forestGreen" />
                             入册照片组
                             <span className="text-sm font-normal text-gray-500">
-                              （{albumPhotos.length} / {order.albumCount} 张）
+                              （{(selectionConfirm ? selectionConfirm.albumPhotoIds.length : albumPhotos.length)} / {order.albumCount} 张）
                             </span>
                           </h4>
                         </div>
                         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
-                          {albumPhotos.map((photo, idx) => (
-                            <ConfirmPhotoItem key={photo.id} photo={photo} index={idx} />
+                          {(selectionConfirm ? selectionConfirm.albumPhotoIds.map((pid) => photos.find((p) => p.id === pid)).filter(Boolean) : albumPhotos).map((photo, idx) => (
+                            <ConfirmPhotoItem key={photo!.id} photo={photo!} index={idx} />
                           ))}
                         </div>
                       </div>
                     )}
 
-                    {retouchPhotos.length > 0 && (
+                    {(selectionConfirm ? selectionConfirm.retouchPhotoIds.map((pid) => photos.find((p) => p.id === pid)).filter(Boolean) : retouchPhotos).length > 0 && (
                       <div>
                         <div className="flex items-center justify-between mb-4">
                           <h4 className="font-semibold text-darkGray flex items-center gap-2">
                             <span className="w-2 h-2 rounded-full bg-roseGold" />
                             精修不入册组
                             <span className="text-sm font-normal text-gray-500">
-                              （{retouchPhotos.length} / {order.retouchCount} 张）
+                              （{(selectionConfirm ? selectionConfirm.retouchPhotoIds.length : retouchPhotos.length)} / {order.retouchCount} 张）
                             </span>
                           </h4>
                         </div>
                         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
-                          {retouchPhotos.map((photo, idx) => (
-                            <ConfirmPhotoItem key={photo.id} photo={photo} index={idx} />
+                          {(selectionConfirm ? selectionConfirm.retouchPhotoIds.map((pid) => photos.find((p) => p.id === pid)).filter(Boolean) : retouchPhotos).map((photo, idx) => (
+                            <ConfirmPhotoItem key={photo!.id} photo={photo!} index={idx} />
                           ))}
                         </div>
                       </div>
                     )}
 
-                    {summary.notes.length > 0 && (
+                    {(selectionConfirm ? selectionConfirm.notes : summary.notes).length > 0 && (
                       <div className="border-t border-warmPink/20 pt-6">
                         <h4 className="font-semibold text-darkGray flex items-center gap-2 mb-4">
                           <MessageSquare className="w-4 h-4 text-roseGold" />
                           备注说明
                         </h4>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                          {summary.notes.map((n) => {
+                          {(selectionConfirm ? selectionConfirm.notes : summary.notes).map((n) => {
                             const p = photos.find((ph) => ph.id === n.photoId);
                             return (
                               <div
@@ -944,9 +1039,31 @@ export default function ClientDetail() {
         </motion.div>
       </AnimatePresence>
 
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        accept="image/*"
+        className="hidden"
+        onChange={(e) => {
+          if (e.target.files && e.target.files.length > 0) {
+            handleFileSelect(e.target.files);
+          }
+          e.target.value = '';
+        }}
+      />
+
       <Modal
         open={uploadModalOpen}
-        onClose={() => !uploading && setUploadModalOpen(false)}
+        onClose={() => {
+          if (!uploading) {
+            setUploadModalOpen(false);
+            setSelectedFiles([]);
+            previewUrls.forEach((u) => URL.revokeObjectURL(u));
+            setPreviewUrls([]);
+            setUploadProgress('');
+          }
+        }}
         className="max-w-md"
       >
         <div className="p-6">
@@ -955,50 +1072,78 @@ export default function ClientDetail() {
             批量上传照片
           </h2>
 
-          <div
-            className="border-2 border-dashed border-roseGold/40 rounded-2xl p-8 mb-6 text-center hover:border-roseGold hover:bg-roseGold/5 transition-all"
-          >
-            <motion.div
-              animate={{ y: [0, -8, 0] }}
-              transition={{ duration: 2, repeat: Infinity, ease: 'easeInOut' }}
-              className="w-16 h-16 rounded-2xl bg-gradient-to-br from-champagne/40 to-roseGold/20 flex items-center justify-center mx-auto mb-4"
+          {selectedFiles.length === 0 ? (
+            <div
+              className="border-2 border-dashed border-roseGold/40 rounded-2xl p-8 mb-6 text-center hover:border-roseGold hover:bg-roseGold/5 transition-all cursor-pointer"
+              onClick={() => fileInputRef.current?.click()}
             >
-              <Upload className="w-8 h-8 text-roseGold" />
-            </motion.div>
-            <p className="font-semibold text-darkGray mb-1">拖拽或点击选择文件</p>
-            <p className="text-xs text-gray-500">支持 JPG / PNG 格式</p>
-          </div>
+              <motion.div
+                animate={{ y: [0, -8, 0] }}
+                transition={{ duration: 2, repeat: Infinity, ease: 'easeInOut' }}
+                className="w-16 h-16 rounded-2xl bg-gradient-to-br from-champagne/40 to-roseGold/20 flex items-center justify-center mx-auto mb-4"
+              >
+                <Upload className="w-8 h-8 text-roseGold" />
+              </motion.div>
+              <p className="font-semibold text-darkGray mb-1">拖拽或点击选择文件</p>
+              <p className="text-xs text-gray-500">支持 JPG / PNG 格式</p>
+            </div>
+          ) : (
+            <div className="mb-6">
+              <p className="text-sm text-gray-600 mb-3">
+                已选择 <span className="font-semibold text-roseGold">{selectedFiles.length}</span> 张照片
+              </p>
+              <div className="grid grid-cols-4 gap-2 max-h-60 overflow-y-auto p-1">
+                {previewUrls.map((url, idx) => (
+                  <div key={idx} className="aspect-square rounded-lg overflow-hidden bg-warmPink/20">
+                    <img src={url} alt="" className="w-full h-full object-cover" />
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
-          <div className="mb-6">
-            <p className="text-sm text-gray-500 mb-2">
-              模拟上传照片数量（演示使用 picsum.photos）
-            </p>
-            <Input
-              type="number"
-              min={1}
-              max={100}
-              value={String(uploadCount)}
-              onChange={(e) => setUploadCount(Math.max(1, Number(e.target.value)))}
-            />
-          </div>
+          {uploadProgress && (
+            <div className="mb-4 rounded-xl bg-warmPink/20 p-3 text-sm text-darkGray flex items-center gap-2">
+              <Upload className="w-4 h-4 text-roseGold animate-bounce" />
+              {uploadProgress}
+            </div>
+          )}
 
           <div className="flex gap-3 justify-end">
             <Button
               variant="ghost"
-              onClick={() => setUploadModalOpen(false)}
+              onClick={() => {
+                setUploadModalOpen(false);
+                setSelectedFiles([]);
+                previewUrls.forEach((u) => URL.revokeObjectURL(u));
+                setPreviewUrls([]);
+                setUploadProgress('');
+              }}
               disabled={uploading}
             >
               取消
             </Button>
-            <Button
-              variant="primary"
-              onClick={handleUpload}
-              loading={uploading}
-              className="shadow-lg shadow-roseGold/20"
-            >
-              <Upload className="w-4 h-4" />
-              {uploading ? '上传中...' : '确认上传'}
-            </Button>
+            {selectedFiles.length === 0 ? (
+              <Button
+                variant="primary"
+                onClick={() => fileInputRef.current?.click()}
+                className="shadow-lg shadow-roseGold/20"
+              >
+                <ImageIcon className="w-4 h-4" />
+                选择照片
+              </Button>
+            ) : (
+              <Button
+                variant="primary"
+                onClick={handleUpload}
+                loading={uploading}
+                disabled={selectedFiles.length === 0}
+                className="shadow-lg shadow-roseGold/20"
+              >
+                <Upload className="w-4 h-4" />
+                {uploading ? '上传中...' : `确认上传 ${selectedFiles.length} 张`}
+              </Button>
+            )}
           </div>
         </div>
       </Modal>
