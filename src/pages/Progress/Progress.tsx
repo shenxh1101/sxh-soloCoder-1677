@@ -65,6 +65,7 @@ const ROLE_LABELS: Record<string, string> = {
 export default function Progress() {
   const navigate = useNavigate();
   const orders = useOrderStore((s) => s.orders);
+  const getPaymentSummary = useOrderStore((s) => s.getPaymentSummary);
   const getClient = useClientStore((s) => s.getClient);
   const getUserById = useAuthStore((s) => s.getUserById);
   const users = useAuthStore((s) => s.users);
@@ -444,6 +445,7 @@ export default function Progress() {
                   {filteredOrders.map((order, idx) => {
                     const client = getClient(order.clientId);
                     const consultant = getUserById(order.consultantId);
+                    const unpaid = getPaymentSummary(order.id).unpaid;
                     return (
                       <motion.div key={order.id} variants={fadeInUp} custom={idx}>
                         <Card className="overflow-hidden hover:shadow-lg transition-all duration-300">
@@ -457,6 +459,11 @@ export default function Progress() {
                                       : '未知客户'}
                                   </h3>
                                   <StatusBadge status={order.status} size="md" />
+                                  {unpaid > 0 && (
+                                    <span className="text-xs px-2 py-0.5 rounded bg-coralRed/15 text-coralRed font-medium">
+                                      未收 ¥{unpaid}
+                                    </span>
+                                  )}
                                 </div>
                                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-sm">
                                   <div className="flex items-center gap-2 text-gray-600">
@@ -585,6 +592,8 @@ export default function Progress() {
                       dueGroup,
                     } = item;
 
+                    const unpaid = getPaymentSummary(order.id).unpaid;
+
                     let borderClass = '';
                     let badgeLabel = '';
                     let badgeClass = '';
@@ -636,6 +645,11 @@ export default function Progress() {
                           </div>
                           <div className="flex flex-wrap items-center gap-2 text-sm">
                             <StatusBadge status={order.status} size="sm" />
+                            {unpaid > 0 && (
+                              <span className="text-xs px-2 py-0.5 rounded bg-coralRed/15 text-coralRed font-medium">
+                                未收 ¥{unpaid}
+                              </span>
+                            )}
                             <span className="text-gray-400">
                               进入状态：{formatDate(enteredDate, 'short')}
                             </span>

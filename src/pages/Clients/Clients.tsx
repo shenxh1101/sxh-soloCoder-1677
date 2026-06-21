@@ -35,7 +35,7 @@ import { STATUS_META } from '@/mock/seed';
 export default function Clients() {
   const navigate = useNavigate();
   const { clients } = useClientStore();
-  const { orders } = useOrderStore();
+  const { orders, getPaymentSummary } = useOrderStore();
   const { users, getUsersByRole } = useAuthStore();
   const { getPhotos, getSelectionSummary } = usePhotoStore();
 
@@ -295,6 +295,7 @@ export default function Clients() {
               const order = getClientOrder(client.id);
               const photos = order ? getPhotos(order.id) : [];
               const summary = order ? getSelectionSummary(order.id) : null;
+              const unpaid = order ? getPaymentSummary(order.id).unpaid : 0;
 
               return (
                 <ClientCard
@@ -305,6 +306,7 @@ export default function Clients() {
                   summary={summary}
                   consultantName={getConsultantName(client.consultantId)}
                   index={index}
+                  unpaid={unpaid}
                   onClick={() => handleCardClick(client.id)}
                 />
               );
@@ -423,6 +425,7 @@ interface ClientCardProps {
   summary: { albumCount: number; retouchCount: number } | null;
   consultantName: string;
   index: number;
+  unpaid: number;
   onClick: () => void;
 }
 
@@ -433,6 +436,7 @@ function ClientCard({
   summary,
   consultantName,
   index,
+  unpaid,
   onClick,
 }: ClientCardProps) {
   return (
@@ -526,6 +530,14 @@ function ClientCard({
               </div>
             </div>
           </div>
+
+          {unpaid > 0 && (
+            <div className="mt-2">
+              <span className="text-xs px-2 py-0.5 rounded bg-coralRed/15 text-coralRed font-medium">
+                未收 ¥{unpaid}
+              </span>
+            </div>
+          )}
 
           <motion.div
             whileHover={{ x: 4 }}

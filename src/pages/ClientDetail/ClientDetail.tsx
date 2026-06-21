@@ -33,6 +33,11 @@ import {
   Printer,
   PlusCircle,
   Send,
+  Wallet,
+  ClipboardCheck,
+  CheckSquare,
+  Square,
+  Truck,
 } from 'lucide-react';
 import { Card } from '@/components/ui/Card';
 import { Select, SelectOption } from '@/components/ui/Select';
@@ -46,7 +51,7 @@ import { usePhotoStore } from '@/store/usePhotoStore';
 import { useAuthStore } from '@/store/useAuthStore';
 import { formatDate, isExpired, daysBetween } from '@/utils/date';
 import { cn } from '@/lib/utils';
-import type { ProductionStatus, PhotoMark, SelectionReminder, AdditionalService } from '@/types';
+import type { ProductionStatus, PhotoMark, SelectionReminder, AdditionalService, PaymentRecord, PaymentType, PaymentMethod, DeliveryChecklist } from '@/types';
 import { STATUS_META } from '@/mock/seed';
 
 type TabKey = 'photos' | 'progress' | 'confirm' | 'order';
@@ -98,7 +103,7 @@ export default function ClientDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { getClient } = useClientStore();
-  const { orders, updateStatus, updateOrder, addSelectionReminder, getSelectionReminders, addAdditionalService, getAdditionalServices } = useOrderStore();
+  const { orders, updateStatus, updateOrder, addSelectionReminder, getSelectionReminders, addAdditionalService, getAdditionalServices, addPaymentRecord, getPaymentRecords, getPaymentSummary, updateDeliveryChecklist } = useOrderStore();
   const getSelectionConfirm = useOrderStore((s) => s.getSelectionConfirm);
   const { getPhotos, addPhotos, markPhoto, addNote, getSelectionSummary } = usePhotoStore();
   const { getUserById, currentUser } = useAuthStore();
@@ -128,6 +133,12 @@ export default function ClientDetail() {
   const [serviceQuantity, setServiceQuantity] = useState('');
   const [serviceFee, setServiceFee] = useState('');
   const [serviceNote, setServiceNote] = useState('');
+  const [paymentModalOpen, setPaymentModalOpen] = useState(false);
+  const [paymentType, setPaymentType] = useState<PaymentType>('deposit');
+  const [paymentAmount, setPaymentAmount] = useState('');
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('wechat');
+  const [paymentNote, setPaymentNote] = useState('');
+  const [deliveryBlockMsg, setDeliveryBlockMsg] = useState('');
 
   const client = id ? getClient(id) : undefined;
   const order = useMemo(() => orders.find((o) => o.clientId === id), [orders, id]);
@@ -137,6 +148,15 @@ export default function ClientDetail() {
   const selectionConfirm = order ? getSelectionConfirm(order.id) : undefined;
   const selectionReminders = order ? getSelectionReminders(order.id) : [];
   const additionalServices = order ? getAdditionalServices(order.id) : [];
+  const paymentRecords = order ? getPaymentRecords(order.id) : [];
+  const paymentSummary = order ? getPaymentSummary(order.id) : { totalPaid: 0, totalDue: 0, unpaid: 0 };
+  const deliveryChecklist = order?.deliveryChecklist || {
+    retouchConfirmed: false,
+    albumConfirmed: false,
+    trackingNumber: '',
+    customerReceived: false,
+  };
+  const isDeliveryComplete = deliveryChecklist.retouchConfirmed && deliveryChecklist.albumConfirmed && !!deliveryChecklist.trackingNumber && deliveryChecklist.customerReceived;
 
   const totalPages = Math.max(1, Math.ceil(photos.length / PHOTOS_PER_PAGE));
   const pagedPhotos = useMemo(() => {
@@ -270,6 +290,11 @@ export default function ClientDetail() {
 
   const handleUpdateStatus = () => {
     if (!order || !nextStatus || !currentUser) return;
+    if (nextStatus === 'completed' && !isDeliveryComplete) {
+      setDeliveryBlockMsg('请先完成交付清单中的所有项目');
+      setStatusModalOpen(false);
+      return;
+    }
     updateStatus(order.id, nextStatus as ProductionStatus, currentUser.id, statusRemark);
     setStatusModalOpen(false);
     setNextStatus('');
@@ -337,6 +362,30 @@ export default function ClientDetail() {
     setServiceNote('');
   };
 
+  const handleAddPayment = () => {
+    if (!order || !currentUser) return;
+    const amount = parseFloat(paymentAmount) || 0;
+    if (amount <= 0) return;
+    addPaymentRecord({
+      orderId: order.id,
+      type: paymentType,
+      amount,
+      method: paymentMethod,
+      operatorId: currentUser.id,
+      operatorName: currentUser.name,
+      note: paymentNote || undefined,
+    });
+    setPaymentModalOpen(false);
+    setPaymentType('deposit');
+    setPaymentAmount('');
+    setPaymentMethod('wechat');
+    setPaymentNote('');
+  };
+
+  const handlePrintDelivery = () => {
+    window.print();
+  };
+
   const tabs: { key: TabKey; label: string; icon: React.ReactNode }[] = [
     { key: 'photos', label: '照片管理', icon: <ImageIcon className="w-4 h-4" /> },
     { key: 'progress', label: '制作进度', icon: <Clock className="w-4 h-4" /> },
@@ -375,6 +424,10 @@ export default function ClientDetail() {
           .no-print { display: none !important; }
           body { background: white !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
           @page { margin: 15mm; size: A4 portrait; }
+          #delivery-document-print { display: block !important; }
+          #delivery-document-print * { visibility: visible; }
+          body > *:not(#delivery-document-print):not(style) { display: none !important; }
+          #delivery-document-print { position: absolute; top: 0; left: 0; width: 100%; }
         }
       `}</style>
       <Card className="p-5 overflow-hidden relative">
@@ -820,83 +873,178 @@ export default function ClientDetail() {
           )}
 
           {activeTab === 'progress' && (
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-              <Card className="lg:col-span-2 p-5">
-                <div className="flex items-center gap-2 mb-5">
-                  <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-champagne/30 to-roseGold/20 flex items-center justify-center">
-                    <Clock className="w-4 h-4 text-roseGold" />
+            <div className="space-y-5">
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+                <Card className="lg:col-span-2 p-5">
+                  <div className="flex items-center gap-2 mb-5">
+                    <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-champagne/30 to-roseGold/20 flex items-center justify-center">
+                      <Clock className="w-4 h-4 text-roseGold" />
+                    </div>
+                    <h3 className="font-semibold text-darkGray">制作进度时间轴</h3>
                   </div>
-                  <h3 className="font-semibold text-darkGray">制作进度时间轴</h3>
-                </div>
-                <StatusTimeline statusHistory={order.statusHistory} />
-              </Card>
+                  <StatusTimeline statusHistory={order.statusHistory} />
+                </Card>
 
-              <Card className="p-5 h-fit">
-                <div className="flex items-center gap-2 mb-5">
-                  <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-forestGreen/15 to-champagne/20 flex items-center justify-center">
-                    <RefreshCw className="w-4 h-4 text-forestGreen" />
-                  </div>
-                  <h3 className="font-semibold text-darkGray">状态流转</h3>
-                </div>
-
-                <div className="space-y-4">
-                  <div>
-                    <p className="text-sm text-gray-500 mb-1.5">当前状态</p>
-                    <StatusBadge status={order.status} size="lg" />
+                <Card className="p-5 h-fit">
+                  <div className="flex items-center gap-2 mb-5">
+                    <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-forestGreen/15 to-champagne/20 flex items-center justify-center">
+                      <RefreshCw className="w-4 h-4 text-forestGreen" />
+                    </div>
+                    <h3 className="font-semibold text-darkGray">状态流转</h3>
                   </div>
 
-                  {order.status !== 'completed' && (
-                    <>
-                      <div>
-                        <p className="text-sm text-gray-500 mb-1.5">下一个状态</p>
-                        <Select
-                          options={nextStatusOptions}
-                          value={nextStatus}
-                          onChange={(v) => setNextStatus(v as ProductionStatus)}
-                          placeholder="选择要流转的状态"
-                        />
+                  <div className="space-y-4">
+                    <div>
+                      <p className="text-sm text-gray-500 mb-1.5">当前状态</p>
+                      <StatusBadge status={order.status} size="lg" />
+                    </div>
+
+                    {deliveryBlockMsg && (
+                      <div className="rounded-xl bg-coralRed/10 border border-coralRed/20 p-3 text-sm text-coralRed flex items-center gap-2">
+                        <AlertCircle className="w-4 h-4 shrink-0" />
+                        {deliveryBlockMsg}
                       </div>
+                    )}
 
-                      <div>
-                        <p className="text-sm text-gray-500 mb-1.5">备注（可选）</p>
-                        <textarea
-                          value={statusRemark}
-                          onChange={(e) => setStatusRemark(e.target.value)}
-                          placeholder="输入状态变更备注..."
-                          rows={3}
+                    {order.status !== 'completed' && (
+                      <>
+                        <div>
+                          <p className="text-sm text-gray-500 mb-1.5">下一个状态</p>
+                          <Select
+                            options={nextStatusOptions}
+                            value={nextStatus}
+                            onChange={(v) => {
+                              setNextStatus(v as ProductionStatus);
+                              setDeliveryBlockMsg('');
+                            }}
+                            placeholder="选择要流转的状态"
+                          />
+                        </div>
+
+                        <div>
+                          <p className="text-sm text-gray-500 mb-1.5">备注（可选）</p>
+                          <textarea
+                            value={statusRemark}
+                            onChange={(e) => setStatusRemark(e.target.value)}
+                            placeholder="输入状态变更备注..."
+                            rows={3}
+                            className={cn(
+                              'w-full rounded-xl border border-warmPink/50 bg-white px-3 py-2.5',
+                              'text-sm text-darkGray placeholder:text-darkGray/30',
+                              'focus:outline-none focus:border-roseGold focus:ring-2 focus:ring-roseGold/30',
+                              'resize-none transition-all duration-200'
+                            )}
+                          />
+                        </div>
+
+                        <Button
+                          variant="primary"
+                          size="md"
+                          disabled={!nextStatus}
+                          onClick={() => setStatusModalOpen(true)}
+                          className="w-full shadow-lg shadow-roseGold/20"
+                        >
+                          <RefreshCw className="w-4 h-4" />
+                          更新状态
+                        </Button>
+                      </>
+                    )}
+
+                    {order.status === 'completed' && (
+                      <div className="rounded-xl bg-forestGreen/10 border border-forestGreen/20 p-4 text-center">
+                        <div className="w-12 h-12 rounded-full bg-forestGreen/20 flex items-center justify-center mx-auto mb-3">
+                          <Check className="w-6 h-6 text-forestGreen" />
+                        </div>
+                        <p className="font-semibold text-forestGreen">订单已完成</p>
+                        <p className="text-xs text-gray-500 mt-1">感谢您的信任与支持</p>
+                      </div>
+                    )}
+                  </div>
+                </Card>
+              </div>
+
+              {(order.status === 'shipping' || order.deliveryChecklist) && (
+                <Card className="p-5">
+                  <div className="flex items-center gap-2 mb-5">
+                    <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-champagne/30 to-roseGold/20 flex items-center justify-center">
+                      <ClipboardCheck className="w-4 h-4 text-roseGold" />
+                    </div>
+                    <h3 className="font-semibold text-darkGray">交付清单</h3>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-5">
+                    <DeliveryCheckItem
+                      label="精修确认完成"
+                      checked={deliveryChecklist.retouchConfirmed}
+                      completedAt={deliveryChecklist.retouchConfirmedAt}
+                      onToggle={() => updateDeliveryChecklist(order.id, {
+                        retouchConfirmed: !deliveryChecklist.retouchConfirmed,
+                      })}
+                    />
+                    <DeliveryCheckItem
+                      label="相册制作确认"
+                      checked={deliveryChecklist.albumConfirmed}
+                      completedAt={deliveryChecklist.albumConfirmedAt}
+                      onToggle={() => updateDeliveryChecklist(order.id, {
+                        albumConfirmed: !deliveryChecklist.albumConfirmed,
+                      })}
+                    />
+                    <div className="rounded-xl bg-warmPink/10 p-4">
+                      <div className="flex items-center gap-3 mb-3">
+                        {deliveryChecklist.trackingNumber ? (
+                          <CheckSquare className="w-6 h-6 text-forestGreen cursor-pointer" onClick={() => updateDeliveryChecklist(order.id, { trackingNumber: '' })} />
+                        ) : (
+                          <Square className="w-6 h-6 text-gray-300" />
+                        )}
+                        <span className={cn('text-sm font-medium', deliveryChecklist.trackingNumber ? 'text-darkGray' : 'text-gray-400')}>
+                          快递单号
+                        </span>
+                        {deliveryChecklist.trackingFilledAt && (
+                          <span className="text-xs text-gray-400 ml-auto">
+                            {formatDate(deliveryChecklist.trackingFilledAt, 'datetime')}
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Truck className="w-4 h-4 text-gray-400 shrink-0" />
+                        <input
+                          type="text"
+                          value={deliveryChecklist.trackingNumber || ''}
+                          onChange={(e) => updateDeliveryChecklist(order.id, { trackingNumber: e.target.value })}
+                          placeholder="输入快递单号"
                           className={cn(
-                            'w-full rounded-xl border border-warmPink/50 bg-white px-3 py-2.5',
+                            'flex-1 rounded-lg border border-warmPink/50 bg-white px-3 py-2',
                             'text-sm text-darkGray placeholder:text-darkGray/30',
                             'focus:outline-none focus:border-roseGold focus:ring-2 focus:ring-roseGold/30',
-                            'resize-none transition-all duration-200'
+                            'transition-all duration-200'
                           )}
                         />
                       </div>
+                    </div>
+                    <DeliveryCheckItem
+                      label="客户签收"
+                      checked={deliveryChecklist.customerReceived}
+                      completedAt={deliveryChecklist.customerReceivedAt}
+                      onToggle={() => updateDeliveryChecklist(order.id, {
+                        customerReceived: !deliveryChecklist.customerReceived,
+                      })}
+                    />
+                  </div>
 
-                      <Button
-                        variant="primary"
-                        size="md"
-                        disabled={!nextStatus}
-                        onClick={() => setStatusModalOpen(true)}
-                        className="w-full shadow-lg shadow-roseGold/20"
-                      >
-                        <RefreshCw className="w-4 h-4" />
-                        更新状态
-                      </Button>
-                    </>
-                  )}
-
-                  {order.status === 'completed' && (
-                    <div className="rounded-xl bg-forestGreen/10 border border-forestGreen/20 p-4 text-center">
-                      <div className="w-12 h-12 rounded-full bg-forestGreen/20 flex items-center justify-center mx-auto mb-3">
-                        <Check className="w-6 h-6 text-forestGreen" />
-                      </div>
-                      <p className="font-semibold text-forestGreen">订单已完成</p>
-                      <p className="text-xs text-gray-500 mt-1">感谢您的信任与支持</p>
+                  {!isDeliveryComplete && order.status === 'shipping' && (
+                    <div className="rounded-xl bg-warmPink/20 p-3 text-sm text-gray-500 flex items-center gap-2">
+                      <AlertCircle className="w-4 h-4 text-roseGold shrink-0" />
+                      只有全部勾选后才能将订单流转到「已完成」
                     </div>
                   )}
-                </div>
-              </Card>
+                  {isDeliveryComplete && (
+                    <div className="rounded-xl bg-forestGreen/10 border border-forestGreen/20 p-3 text-sm text-forestGreen flex items-center gap-2">
+                      <Check className="w-4 h-4 shrink-0" />
+                      交付清单已全部完成，可以流转到「已完成」
+                    </div>
+                  )}
+                </Card>
+              )}
             </div>
           )}
 
@@ -965,6 +1113,15 @@ export default function ClientDetail() {
                     >
                       <Printer className="w-3.5 h-3.5" />
                       导出打印
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={handlePrintDelivery}
+                      className="h-8 px-3 text-xs no-print"
+                    >
+                      <FileText className="w-3.5 h-3.5" />
+                      交付单
                     </Button>
                     {selectionConfirm ? (
                       <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-forestGreen/15 text-forestGreen text-sm font-medium">
@@ -1318,6 +1475,91 @@ export default function ClientDetail() {
                         ))}
                       </div>
                       <p className="text-sm text-gray-400">客户尚未评分</p>
+                    </div>
+                  )}
+                </Card>
+
+                <Card className="p-6">
+                  <div className="flex items-center justify-between mb-5">
+                    <div className="flex items-center gap-2">
+                      <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-champagne/30 to-roseGold/20 flex items-center justify-center">
+                        <Wallet className="w-4 h-4 text-roseGold" />
+                      </div>
+                      <h3 className="font-semibold text-darkGray">收款跟进</h3>
+                    </div>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => setPaymentModalOpen(true)}
+                      className="h-8 px-3 text-xs"
+                    >
+                      <PlusCircle className="w-3.5 h-3.5" />
+                      登记收款
+                    </Button>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-3 mb-5">
+                    <div className="rounded-xl bg-warmPink/10 p-3 text-center">
+                      <p className="text-xs text-gray-500 mb-1">应收总额</p>
+                      <p className="text-lg font-bold text-darkGray">¥{paymentSummary.totalDue.toLocaleString()}</p>
+                    </div>
+                    <div className="rounded-xl bg-forestGreen/10 p-3 text-center">
+                      <p className="text-xs text-gray-500 mb-1">已收金额</p>
+                      <p className="text-lg font-bold text-forestGreen">¥{paymentSummary.totalPaid.toLocaleString()}</p>
+                    </div>
+                    <div className={cn('rounded-xl p-3 text-center', paymentSummary.unpaid > 0 ? 'bg-coralRed/10' : 'bg-warmPink/10')}>
+                      <p className="text-xs text-gray-500 mb-1">未收金额</p>
+                      <p className={cn('text-lg font-bold', paymentSummary.unpaid > 0 ? 'text-coralRed' : 'text-forestGreen')}>
+                        ¥{paymentSummary.unpaid.toLocaleString()}
+                      </p>
+                    </div>
+                  </div>
+
+                  {paymentRecords.length === 0 ? (
+                    <div className="py-8 text-center">
+                      <div className="w-12 h-12 rounded-full bg-warmPink/30 flex items-center justify-center mx-auto mb-3">
+                        <Wallet className="w-6 h-6 text-roseGold/40" />
+                      </div>
+                      <p className="text-sm text-gray-400">暂无收款记录</p>
+                    </div>
+                  ) : (
+                    <div className="space-y-0">
+                      {paymentRecords.map((r, idx) => (
+                        <div key={r.id} className="relative flex gap-3 pb-4">
+                          {idx < paymentRecords.length - 1 && (
+                            <div className="absolute left-[11px] top-6 bottom-0 w-px bg-warmPink/30" />
+                          )}
+                          <div className={cn(
+                            'w-6 h-6 rounded-full flex items-center justify-center shrink-0 text-white text-[10px] font-bold z-10',
+                            r.type === 'deposit' ? 'bg-champagne' :
+                            r.type === 'balance' ? 'bg-forestGreen' : 'bg-coralRed'
+                          )}>
+                            {r.type === 'deposit' ? '定' : r.type === 'balance' ? '尾' : '追'}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 mb-0.5 flex-wrap">
+                              <span className={cn(
+                                'text-xs px-1.5 py-0.5 rounded font-medium',
+                                r.type === 'deposit' ? 'bg-champagne/30 text-amber-700' :
+                                r.type === 'balance' ? 'bg-forestGreen/15 text-forestGreen' : 'bg-coralRed/15 text-coralRed'
+                              )}>
+                                {r.type === 'deposit' ? '定金' : r.type === 'balance' ? '尾款' : '追加'}
+                              </span>
+                              <span className="text-sm font-semibold text-darkGray">¥{r.amount.toLocaleString()}</span>
+                              <span className="text-xs text-gray-400">
+                                {r.method === 'cash' ? '现金' : r.method === 'transfer' ? '转账' : r.method === 'wechat' ? '微信' : r.method === 'alipay' ? '支付宝' : '其他'}
+                              </span>
+                              <span className="text-xs text-gray-400">
+                                {r.operatorName}
+                              </span>
+                              <span className="text-xs text-gray-400">{formatDate(r.createdAt, 'datetime')}</span>
+                            </div>
+                            {r.note && (
+                              <p className="text-sm text-gray-600 mt-0.5">{r.note}</p>
+                            )}
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   )}
                 </Card>
@@ -1682,6 +1924,187 @@ export default function ClientDetail() {
           </div>
         </div>
       </Modal>
+
+      <Modal
+        open={paymentModalOpen}
+        onClose={() => {
+          setPaymentModalOpen(false);
+          setPaymentType('deposit');
+          setPaymentAmount('');
+          setPaymentMethod('wechat');
+          setPaymentNote('');
+        }}
+        className="max-w-md"
+      >
+        <div className="p-6">
+          <h2 className="text-xl font-bold text-darkGray mb-6 flex items-center gap-2">
+            <Wallet className="w-5 h-5 text-roseGold" />
+            登记收款
+          </h2>
+
+          <div className="space-y-4">
+            <div>
+              <p className="text-sm text-gray-500 mb-1.5">收款类型</p>
+              <Select
+                options={[
+                  { value: 'deposit', label: '定金' },
+                  { value: 'balance', label: '尾款' },
+                  { value: 'additional', label: '追加费用' },
+                ]}
+                value={paymentType}
+                onChange={(v) => setPaymentType(v as PaymentType)}
+                placeholder="选择收款类型"
+              />
+            </div>
+
+            <div>
+              <p className="text-sm text-gray-500 mb-1.5">金额（元）</p>
+              <input
+                type="number"
+                min={0}
+                value={paymentAmount}
+                onChange={(e) => setPaymentAmount(e.target.value)}
+                placeholder="输入收款金额"
+                className={cn(
+                  'w-full rounded-xl border border-warmPink/50 bg-white px-3 py-2.5',
+                  'text-sm text-darkGray placeholder:text-darkGray/30',
+                  'focus:outline-none focus:border-roseGold focus:ring-2 focus:ring-roseGold/30',
+                  'transition-all duration-200'
+                )}
+              />
+            </div>
+
+            <div>
+              <p className="text-sm text-gray-500 mb-1.5">收款方式</p>
+              <Select
+                options={[
+                  { value: 'cash', label: '现金' },
+                  { value: 'transfer', label: '转账' },
+                  { value: 'wechat', label: '微信' },
+                  { value: 'alipay', label: '支付宝' },
+                  { value: 'other', label: '其他' },
+                ]}
+                value={paymentMethod}
+                onChange={(v) => setPaymentMethod(v as PaymentMethod)}
+                placeholder="选择收款方式"
+              />
+            </div>
+
+            <div>
+              <p className="text-sm text-gray-500 mb-1.5">备注（可选）</p>
+              <textarea
+                value={paymentNote}
+                onChange={(e) => setPaymentNote(e.target.value)}
+                placeholder="输入收款备注..."
+                rows={3}
+                className={cn(
+                  'w-full rounded-xl border border-warmPink/50 bg-white px-3 py-2.5',
+                  'text-sm text-darkGray placeholder:text-darkGray/30',
+                  'focus:outline-none focus:border-roseGold focus:ring-2 focus:ring-roseGold/30',
+                  'resize-none transition-all duration-200'
+                )}
+              />
+            </div>
+          </div>
+
+          <div className="flex gap-3 justify-end mt-6">
+            <Button variant="ghost" onClick={() => {
+              setPaymentModalOpen(false);
+              setPaymentType('deposit');
+              setPaymentAmount('');
+              setPaymentMethod('wechat');
+              setPaymentNote('');
+            }}>
+              取消
+            </Button>
+            <Button
+              variant="primary"
+              onClick={handleAddPayment}
+              disabled={!paymentAmount || parseFloat(paymentAmount) <= 0}
+              className="shadow-lg shadow-roseGold/20"
+            >
+              <Wallet className="w-4 h-4" />
+              提交
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      <div id="delivery-document-print" className="hidden print:block">
+        <div style={{ fontFamily: "'Noto Serif SC', serif", maxWidth: '800px', margin: '0 auto', padding: '40px' }}>
+          <h1 style={{ textAlign: 'center', fontSize: '28px', fontWeight: 'bold', marginBottom: '4px' }}>婚纱摄影 · 最终交付单</h1>
+          <div style={{ textAlign: 'center', fontSize: '12px', color: '#888', marginBottom: '20px' }}>客户最终交付凭证</div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px 24px', marginBottom: '20px', fontSize: '14px' }}>
+            <div>客户姓名：{client?.name} & {client?.partnerName}</div>
+            <div>订单号：{order.id}</div>
+            <div>套餐：{order.packageName}</div>
+            <div>拍摄日期：{formatDate(order.shootDate, 'short')}</div>
+          </div>
+
+          <hr style={{ border: 'none', borderTop: '2px solid #333', margin: '16px 0' }} />
+
+          <h2 style={{ fontSize: '16px', fontWeight: 'bold', margin: '16px 0 12px' }}>【收款汇总】</h2>
+          <div style={{ fontSize: '14px', lineHeight: '2' }}>
+            <div>应收总额：¥{paymentSummary.totalDue.toLocaleString()}</div>
+            <div style={{ paddingLeft: '24px' }}>套餐费用：¥{calculatePrice(order.packageName, order.albumCount, order.retouchCount)}</div>
+            {additionalServices.length > 0 && (
+              <div style={{ paddingLeft: '24px' }}>追加费用：¥{additionalServices.reduce((sum, s) => sum + s.fee, 0).toLocaleString()}</div>
+            )}
+            <div>已收金额：¥{paymentSummary.totalPaid.toLocaleString()}</div>
+            <div>未收金额：¥{paymentSummary.unpaid.toLocaleString()}</div>
+          </div>
+
+          {paymentRecords.length > 0 && (
+            <>
+              <div style={{ fontSize: '14px', marginTop: '12px', fontWeight: 'bold' }}>收款明细：</div>
+              <div style={{ fontSize: '13px', lineHeight: '2', paddingLeft: '24px' }}>
+                {paymentRecords.map((r, idx) => (
+                  <div key={r.id}>
+                    {idx + 1}. {r.type === 'deposit' ? '定金' : r.type === 'balance' ? '尾款' : '追加'} ¥{r.amount.toLocaleString()} {r.method === 'cash' ? '现金' : r.method === 'transfer' ? '转账' : r.method === 'wechat' ? '微信' : r.method === 'alipay' ? '支付宝' : '其他'} {formatDate(r.createdAt, 'short')}
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+
+          <hr style={{ border: 'none', borderTop: '1px solid #ccc', margin: '16px 0' }} />
+
+          {additionalServices.length > 0 && (
+            <>
+              <h2 style={{ fontSize: '16px', fontWeight: 'bold', margin: '16px 0 12px' }}>【追加服务】</h2>
+              <div style={{ fontSize: '13px', lineHeight: '2', paddingLeft: '24px' }}>
+                {additionalServices.map((svc, idx) => (
+                  <div key={svc.id}>
+                    {idx + 1}. {svc.type === 'additional_retouch' ? '加修精修' : '加册入册'} {svc.quantity}张 ¥{svc.fee}{svc.note ? ` 备注：${svc.note}` : ''}
+                  </div>
+                ))}
+                <div style={{ fontWeight: 'bold', marginTop: '4px' }}>追加费用合计：¥{additionalServices.reduce((sum, s) => sum + s.fee, 0).toLocaleString()}</div>
+              </div>
+              <hr style={{ border: 'none', borderTop: '1px solid #ccc', margin: '16px 0' }} />
+            </>
+          )}
+
+          <h2 style={{ fontSize: '16px', fontWeight: 'bold', margin: '16px 0 12px' }}>【交付清单】</h2>
+          <div style={{ fontSize: '14px', lineHeight: '2.2', paddingLeft: '24px' }}>
+            <div>{deliveryChecklist.retouchConfirmed ? '☑' : '☐'} 精修确认完成</div>
+            <div>{deliveryChecklist.albumConfirmed ? '☑' : '☐'} 相册制作确认</div>
+            <div>{deliveryChecklist.trackingNumber ? '☑' : '☐'} 快递单号：{deliveryChecklist.trackingNumber || '______'}</div>
+            <div>{deliveryChecklist.customerReceived ? '☑' : '☐'} 客户签收</div>
+          </div>
+
+          <hr style={{ border: 'none', borderTop: '1px solid #ccc', margin: '16px 0' }} />
+
+          <div style={{ fontSize: '14px', lineHeight: '2', marginTop: '16px' }}>
+            <div>签收时间：{deliveryChecklist.customerReceivedAt ? formatDate(deliveryChecklist.customerReceivedAt, 'datetime') : '_______________'}</div>
+          </div>
+
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '40px', fontSize: '14px' }}>
+            <div>客户签名：_______________</div>
+            <div>日期：_______________</div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1996,4 +2419,40 @@ function calculatePrice(packageName: string, albumCount: number, retouchCount: n
   const base = basePrices[packageName] || 5000;
   const extra = Math.max(0, albumCount - 30) * 80 + Math.max(0, retouchCount - 20) * 50;
   return (base + extra).toLocaleString();
+}
+
+function DeliveryCheckItem({
+  label,
+  checked,
+  completedAt,
+  onToggle,
+}: {
+  label: string;
+  checked: boolean;
+  completedAt?: string;
+  onToggle: () => void;
+}) {
+  return (
+    <div className="rounded-xl bg-warmPink/10 p-4">
+      <div className="flex items-center gap-3">
+        <div onClick={onToggle} className="cursor-pointer">
+          {checked ? (
+            <CheckSquare className="w-6 h-6 text-forestGreen" />
+          ) : (
+            <Square className="w-6 h-6 text-gray-300" />
+          )}
+        </div>
+        <div className="flex-1">
+          <span className={cn('text-sm font-medium', checked ? 'text-darkGray' : 'text-gray-400')}>
+            {label}
+          </span>
+          {checked && completedAt && (
+            <span className="text-xs text-gray-400 ml-3">
+              ✓ {formatDate(completedAt, 'datetime')}
+            </span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
 }

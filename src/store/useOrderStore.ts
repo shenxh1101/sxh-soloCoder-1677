@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { generateMockData } from '../mock/seed';
 import { useLocalStorage } from '../utils/storage';
-import type { Order, ProductionStatus, StatusRecord, SelectionConfirm, SelectionReminder, AdditionalService } from '../types';
+import type { Order, ProductionStatus, StatusRecord, SelectionConfirm, SelectionReminder, AdditionalService, PaymentRecord, DeliveryChecklist } from '../types';
 
 interface OrderState {
   orders: Order[];
@@ -29,12 +29,18 @@ interface OrderState {
   getSelectionReminders: (orderId: string) => SelectionReminder[];
   addAdditionalService: (service: Omit<AdditionalService, 'id' | 'createdAt'>) => void;
   getAdditionalServices: (orderId: string) => AdditionalService[];
+  paymentRecords: Record<string, PaymentRecord[]>;
+  addPaymentRecord: (record: Omit<PaymentRecord, 'id' | 'createdAt'>) => void;
+  getPaymentRecords: (orderId: string) => PaymentRecord[];
+  getPaymentSummary: (orderId: string) => { totalPaid: number; totalDue: number; unpaid: number };
+  updateDeliveryChecklist: (orderId: string, checklist: Partial<DeliveryChecklist>) => void;
 }
 
 const ordersStorage = useLocalStorage<Order[]>('order_list');
 const selectionConfirmsStorage = useLocalStorage<Record<string, SelectionConfirm>>('selection_confirms');
 const selectionRemindersStorage = useLocalStorage<Record<string, SelectionReminder[]>>('selection_reminders');
 const additionalServicesStorage = useLocalStorage<Record<string, AdditionalService[]>>('additional_services');
+const paymentRecordsStorage = useLocalStorage<Record<string, PaymentRecord[]>>('payment_records');
 
 const initialOrders = (() => {
   const stored = ordersStorage.get();
@@ -57,6 +63,14 @@ const initialSelectionReminders = (() => {
 const initialAdditionalServices = (() => {
   const stored = additionalServicesStorage.get();
   return stored || {};
+})();
+
+const initialPaymentRecords = (() => {
+  const stored = paymentRecordsStorage.get();
+  if (stored && Object.keys(stored).length > 0) return stored;
+  const { paymentRecords } = generateMockData();
+  paymentRecordsStorage.set(paymentRecords);
+  return paymentRecords;
 })();
 
 function generateOrderId(): string {
@@ -84,6 +98,7 @@ export const useOrderStore = create<OrderState>((set, get) => ({
   selectionConfirms: initialSelectionConfirms,
   selectionReminders: initialSelectionReminders,
   additionalServices: initialAdditionalServices,
+  paymentRecords: initialPaymentRecords,
 
   fetchOrders: async () => {
     const { orders } = get();
@@ -151,6 +166,14 @@ export const useOrderStore = create<OrderState>((set, get) => ({
     const { orders } = get();
     const idx = orders.findIndex((o) => o.id === orderId);
     if (idx === -1) return undefined;
+
+    if (status === 'completed') {
+      const targetOrder = orders[idx];
+      const dc = targetOrder.deliveryChecklist;
+      if (!dc || !dc.retouchConfirmed || !dc.albumConfirmed || !dc.trackingNumber || !dc.customerReceived) {
+        return undefined;
+      }
+    }
 
     const statusRecord: StatusRecord = {
       status,
@@ -283,5 +306,92 @@ export const useOrderStore = create<OrderState>((set, get) => ({
     return [...services].sort(
       (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
     );
+  },
+
+  addPaymentRecord: (record) => {
+    const now = new Date().toISOString();
+    const newRecord: PaymentRecord = {
+      ...record,
+      id: `pay_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      createdAt: now,
+    };
+    const { paymentRecords } = get();
+    const existing = paymentRecords[record.orderId] || [];
+    const updated = {
+      ...paymentRecords,
+      [record.orderId]: [...existing, newRecord],
+    };
+    set({ paymentRecords: updated });
+    paymentRecordsStorage.set(updated);
+  },
+
+  getPaymentRecords: (orderId: string) => {
+    const records = get().paymentRecords[orderId] || [];
+    return [...records].sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+  },
+
+  getPaymentSummary: (orderId: string) => {
+    const records = get().paymentRecords[orderId] || [];
+    const totalPaid = records.reduce((sum, r) => sum + r.amount, 0);
+    const { additionalServices, orders } = get();
+    const order = orders.find((o) => o.id === orderId);
+    const services = additionalServices[orderId] || [];
+    const additionalTotal = services.reduce((sum, s) => sum + s.fee, 0);
+    const basePrices: Record<string, number> = {
+      '经典婚纱套餐A': 6888,
+      '尊贵婚纱套餐B': 9888,
+      '豪华婚纱套餐C': 15888,
+      '旅拍婚纱套餐': 12888,
+      '室内实景套餐': 4888,
+      '情侣写真套餐': 2888,
+    };
+    const base = order ? (basePrices[order.packageName] || 5000) : 0;
+    const extra = order
+      ? Math.max(0, order.albumCount - 30) * 80 + Math.max(0, order.retouchCount - 20) * 50
+      : 0;
+    const packagePrice = base + extra;
+    const totalDue = packagePrice + additionalTotal;
+    const unpaid = Math.max(0, totalDue - totalPaid);
+    return { totalPaid, totalDue, unpaid };
+  },
+
+  updateDeliveryChecklist: (orderId, checklist) => {
+    const { orders } = get();
+    const idx = orders.findIndex((o) => o.id === orderId);
+    if (idx === -1) return;
+    const targetOrder = orders[idx];
+    const now = new Date().toISOString();
+    const existing = targetOrder.deliveryChecklist || {
+      retouchConfirmed: false,
+      albumConfirmed: false,
+      trackingNumber: '',
+      customerReceived: false,
+    };
+    const updatedChecklist: DeliveryChecklist = {
+      ...existing,
+      ...checklist,
+    };
+    if (checklist.retouchConfirmed && !existing.retouchConfirmed) {
+      updatedChecklist.retouchConfirmedAt = now;
+    }
+    if (checklist.albumConfirmed && !existing.albumConfirmed) {
+      updatedChecklist.albumConfirmedAt = now;
+    }
+    if (checklist.trackingNumber && checklist.trackingNumber !== existing.trackingNumber) {
+      updatedChecklist.trackingFilledAt = now;
+    }
+    if (checklist.customerReceived && !existing.customerReceived) {
+      updatedChecklist.customerReceivedAt = now;
+    }
+    const updatedOrder: Order = {
+      ...targetOrder,
+      deliveryChecklist: updatedChecklist,
+    };
+    const updated = [...orders];
+    updated[idx] = updatedOrder;
+    set({ orders: updated, currentOrder: updatedOrder });
+    persistOrders(updated);
   },
 }));

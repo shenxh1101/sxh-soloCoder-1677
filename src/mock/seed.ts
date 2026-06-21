@@ -78,6 +78,18 @@ export interface MonthlyStat {
   orderCount: number;
 }
 
+export interface PaymentRecord {
+  id: string;
+  orderId: string;
+  type: 'deposit' | 'balance' | 'additional';
+  amount: number;
+  method: 'cash' | 'transfer' | 'wechat' | 'alipay' | 'other';
+  operatorId: string;
+  operatorName: string;
+  createdAt: string;
+  note?: string;
+}
+
 export const STATUS_META: Record<
   ProductionStatus,
   { label: string; color: string; bgColor: string; icon: string }
@@ -137,12 +149,12 @@ const ALL_STATUSES: ProductionStatus[] = [
 ];
 
 const PACKAGES = [
-  { name: '经典婚纱套餐A', album: 40, retouch: 30 },
-  { name: '尊贵婚纱套餐B', album: 50, retouch: 40 },
-  { name: '豪华婚纱套餐C', album: 60, retouch: 50 },
-  { name: '旅拍婚纱套餐', album: 45, retouch: 35 },
-  { name: '室内实景套餐', album: 35, retouch: 25 },
-  { name: '情侣写真套餐', album: 30, retouch: 20 },
+  { name: '经典婚纱套餐A', album: 40, retouch: 30, price: 6888 },
+  { name: '尊贵婚纱套餐B', album: 50, retouch: 40, price: 9888 },
+  { name: '豪华婚纱套餐C', album: 60, retouch: 50, price: 15888 },
+  { name: '旅拍婚纱套餐', album: 45, retouch: 35, price: 12888 },
+  { name: '室内实景套餐', album: 35, retouch: 25, price: 4888 },
+  { name: '情侣写真套餐', album: 30, retouch: 20, price: 2888 },
 ];
 
 const GROOM_NAMES = [
@@ -480,12 +492,60 @@ function generateStats(users: User[]): MonthlyStat[] {
   return stats;
 }
 
+function generatePaymentRecords(orders: Order[], users: User[]): Record<string, PaymentRecord[]> {
+  const records: Record<string, PaymentRecord[]> = {};
+  const consultants = users.filter((u) => u.role === 'consultant');
+
+  for (let i = 0; i < orders.length; i++) {
+    const order = orders[i];
+    const pkg = PACKAGES[i % PACKAGES.length];
+    const totalDue = pkg.price + Math.max(0, order.albumCount - 30) * 80 + Math.max(0, order.retouchCount - 20) * 50;
+    const consultant = consultants.find((c) => c.id === order.consultantId) || consultants[0];
+    const orderRecords: PaymentRecord[] = [];
+
+    const depositAmount = Math.round(totalDue * 0.3 / 100) * 100;
+    orderRecords.push({
+      id: `pay_${order.id.split('_')[1]}_1`,
+      orderId: order.id,
+      type: 'deposit',
+      amount: depositAmount,
+      method: randomItem(['wechat', 'transfer', 'alipay'] as const),
+      operatorId: consultant.id,
+      operatorName: consultant.name,
+      createdAt: order.createdAt,
+      note: '定金',
+    });
+
+    if (i % 3 !== 0) {
+      const finalAmount = Math.round(totalDue * 0.5 / 100) * 100;
+      const finalDate = new Date(order.shootDate);
+      finalDate.setDate(finalDate.getDate() + randomInt(1, 3));
+      orderRecords.push({
+        id: `pay_${order.id.split('_')[1]}_2`,
+        orderId: order.id,
+        type: 'balance',
+        amount: finalAmount,
+        method: randomItem(['transfer', 'cash', 'wechat'] as const),
+        operatorId: consultant.id,
+        operatorName: consultant.name,
+        createdAt: finalDate.toISOString(),
+        note: '尾款部分',
+      });
+    }
+
+    records[order.id] = orderRecords;
+  }
+
+  return records;
+}
+
 export function generateMockData() {
   const users = generateUsers();
   const clients = generateClients(users);
   const orders = generateOrders(clients, users);
   const photos = generatePhotos(orders);
   const stats = generateStats(users);
+  const paymentRecords = generatePaymentRecords(orders, users);
 
-  return { users, clients, orders, photos, stats };
+  return { users, clients, orders, photos, stats, paymentRecords };
 }

@@ -123,8 +123,10 @@ export interface Order {
   selectToken: string;
   selectExpireAt: string;
   satisfaction?: number;
+  totalAmount?: number;
   statusHistory: StatusRecord[];
   createdAt: string;
+  deliveryChecklist?: DeliveryChecklist;
 }
 
 /**
@@ -214,6 +216,32 @@ export interface AdditionalService {
   operatorName: string;
   createdAt: string;
   note?: string;
+}
+
+export type PaymentType = 'deposit' | 'balance' | 'additional';
+export type PaymentMethod = 'cash' | 'transfer' | 'wechat' | 'alipay' | 'other';
+
+export interface PaymentRecord {
+  id: string;
+  orderId: string;
+  type: PaymentType;
+  amount: number;
+  method: PaymentMethod;
+  operatorId: string;
+  operatorName: string;
+  note?: string;
+  createdAt: string;
+}
+
+export interface DeliveryChecklist {
+  retouchConfirmed: boolean;
+  retouchConfirmedAt?: string;
+  albumConfirmed: boolean;
+  albumConfirmedAt?: string;
+  trackingNumber: string;
+  trackingFilledAt?: string;
+  customerReceived: boolean;
+  customerReceivedAt?: string;
 }
 
 export interface ConsultantStats {
