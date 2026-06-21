@@ -182,6 +182,28 @@ export interface SelectionConfirm {
  * @property avgSatisfaction - 该顾问本月订单的客户满意度平均分，0-5分
  * @property orderCount - 该顾问本月处理的订单总数
  */
+export interface SelectionReminder {
+  id: string;
+  orderId: string;
+  channel: 'wechat' | 'phone' | 'sms' | 'other';
+  senderId: string;
+  senderName: string;
+  note?: string;
+  createdAt: string;
+}
+
+export interface AdditionalService {
+  id: string;
+  orderId: string;
+  type: 'additional_retouch' | 'additional_album';
+  quantity: number;
+  fee: number;
+  note?: string;
+  operatorId: string;
+  operatorName: string;
+  createdAt: string;
+}
+
 export interface ConsultantStats {
   consultantId: string;
   consultantName: string;
@@ -210,4 +232,44 @@ export interface MonthlyStat {
   retouchedPhotos: number;
   satisfaction: number;
   orderCount: number;
+}
+
+/**
+ * 选片提醒记录接口，记录客服向客户发送选片链接的历史
+ * @property id - 记录唯一标识符
+ * @property orderId - 关联订单ID
+ * @property channel - 发送渠道：wechat(微信)、phone(电话)、sms(短信)、other(其他)
+ * @property sentBy - 发送人用户ID
+ * @property sentAt - 发送时间
+ * @property remark - 备注，可选
+ */
+export interface SelectionReminder {
+  id: string;
+  orderId: string;
+  channel: 'wechat' | 'phone' | 'sms' | 'other';
+  sentBy: string;
+  sentAt: string;
+  remark?: string;
+}
+
+/**
+ * 补选加修记录接口，记录客户在确认选片后追加的精修需求
+ * @property id - 记录唯一标识符
+ * @property orderId - 关联订单ID
+ * @property type - 类型：additional_retouch(加修)、additional_album(加册)
+ * @property quantity - 追加数量
+ * @property fee - 追加费用（元）
+ * @property remark - 备注，如加修原因或具体要求
+ * @property addedBy - 登记人用户ID
+ * @property addedAt - 登记时间
+ */
+export interface AdditionalService {
+  id: string;
+  orderId: string;
+  type: 'additional_retouch' | 'additional_album';
+  quantity: number;
+  fee: number;
+  remark?: string;
+  addedBy: string;
+  addedAt: string;
 }

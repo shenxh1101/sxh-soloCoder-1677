@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { generateMockData } from '../mock/seed';
 import { useLocalStorage } from '../utils/storage';
-import type { Order, ProductionStatus, StatusRecord, SelectionConfirm } from '../types';
+import type { Order, ProductionStatus, StatusRecord, SelectionConfirm, SelectionReminder, AdditionalService } from '../types';
 
 interface OrderState {
   orders: Order[];
@@ -23,10 +23,18 @@ interface OrderState {
   getOrdersByStatus: (status: ProductionStatus) => Order[];
   saveSelectionConfirm: (confirm: SelectionConfirm) => void;
   getSelectionConfirm: (orderId: string) => SelectionConfirm | undefined;
+  selectionReminders: Record<string, SelectionReminder[]>;
+  additionalServices: Record<string, AdditionalService[]>;
+  addSelectionReminder: (reminder: Omit<SelectionReminder, 'id' | 'createdAt'>) => void;
+  getSelectionReminders: (orderId: string) => SelectionReminder[];
+  addAdditionalService: (service: Omit<AdditionalService, 'id' | 'createdAt'>) => void;
+  getAdditionalServices: (orderId: string) => AdditionalService[];
 }
 
 const ordersStorage = useLocalStorage<Order[]>('order_list');
 const selectionConfirmsStorage = useLocalStorage<Record<string, SelectionConfirm>>('selection_confirms');
+const selectionRemindersStorage = useLocalStorage<Record<string, SelectionReminder[]>>('selection_reminders');
+const additionalServicesStorage = useLocalStorage<Record<string, AdditionalService[]>>('additional_services');
 
 const initialOrders = (() => {
   const stored = ordersStorage.get();
@@ -38,6 +46,16 @@ const initialOrders = (() => {
 
 const initialSelectionConfirms = (() => {
   const stored = selectionConfirmsStorage.get();
+  return stored || {};
+})();
+
+const initialSelectionReminders = (() => {
+  const stored = selectionRemindersStorage.get();
+  return stored || {};
+})();
+
+const initialAdditionalServices = (() => {
+  const stored = additionalServicesStorage.get();
   return stored || {};
 })();
 
@@ -64,6 +82,8 @@ export const useOrderStore = create<OrderState>((set, get) => ({
   orders: initialOrders,
   currentOrder: null,
   selectionConfirms: initialSelectionConfirms,
+  selectionReminders: initialSelectionReminders,
+  additionalServices: initialAdditionalServices,
 
   fetchOrders: async () => {
     const { orders } = get();
@@ -191,5 +211,53 @@ export const useOrderStore = create<OrderState>((set, get) => ({
 
   getSelectionConfirm: (orderId: string) => {
     return get().selectionConfirms[orderId];
+  },
+
+  addSelectionReminder: (reminder) => {
+    const now = new Date().toISOString();
+    const newReminder: SelectionReminder = {
+      ...reminder,
+      id: `rem_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      createdAt: now,
+    };
+    const { selectionReminders } = get();
+    const existing = selectionReminders[reminder.orderId] || [];
+    const updated = {
+      ...selectionReminders,
+      [reminder.orderId]: [...existing, newReminder],
+    };
+    set({ selectionReminders: updated });
+    selectionRemindersStorage.set(updated);
+  },
+
+  getSelectionReminders: (orderId: string) => {
+    const reminders = get().selectionReminders[orderId] || [];
+    return [...reminders].sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+  },
+
+  addAdditionalService: (service) => {
+    const now = new Date().toISOString();
+    const newService: AdditionalService = {
+      ...service,
+      id: `svc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      createdAt: now,
+    };
+    const { additionalServices } = get();
+    const existing = additionalServices[service.orderId] || [];
+    const updated = {
+      ...additionalServices,
+      [service.orderId]: [...existing, newService],
+    };
+    set({ additionalServices: updated });
+    additionalServicesStorage.set(updated);
+  },
+
+  getAdditionalServices: (orderId: string) => {
+    const services = get().additionalServices[orderId] || [];
+    return [...services].sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
   },
 }));

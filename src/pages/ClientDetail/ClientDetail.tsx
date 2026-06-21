@@ -29,6 +29,10 @@ import {
   Sparkles,
   Receipt,
   Clock,
+  Bell,
+  Printer,
+  PlusCircle,
+  Send,
 } from 'lucide-react';
 import { Card } from '@/components/ui/Card';
 import { Select, SelectOption } from '@/components/ui/Select';
@@ -42,7 +46,7 @@ import { usePhotoStore } from '@/store/usePhotoStore';
 import { useAuthStore } from '@/store/useAuthStore';
 import { formatDate, isExpired, daysBetween } from '@/utils/date';
 import { cn } from '@/lib/utils';
-import type { ProductionStatus, PhotoMark } from '@/types';
+import type { ProductionStatus, PhotoMark, SelectionReminder, AdditionalService } from '@/types';
 import { STATUS_META } from '@/mock/seed';
 
 type TabKey = 'photos' | 'progress' | 'confirm' | 'order';
@@ -94,7 +98,7 @@ export default function ClientDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { getClient } = useClientStore();
-  const { orders, updateStatus, updateOrder } = useOrderStore();
+  const { orders, updateStatus, updateOrder, addSelectionReminder, getSelectionReminders, addAdditionalService, getAdditionalServices } = useOrderStore();
   const getSelectionConfirm = useOrderStore((s) => s.getSelectionConfirm);
   const { getPhotos, addPhotos, markPhoto, addNote, getSelectionSummary } = usePhotoStore();
   const { getUserById, currentUser } = useAuthStore();
@@ -115,6 +119,15 @@ export default function ClientDetail() {
   const [noteModalOpen, setNoteModalOpen] = useState(false);
   const [currentPhotoId, setCurrentPhotoId] = useState<string | null>(null);
   const [currentNote, setCurrentNote] = useState('');
+  const [reminderModalOpen, setReminderModalOpen] = useState(false);
+  const [reminderChannel, setReminderChannel] = useState<'wechat' | 'phone' | 'sms' | 'other'>('wechat');
+  const [reminderNote, setReminderNote] = useState('');
+  const [showLinkUpdatedTip, setShowLinkUpdatedTip] = useState(false);
+  const [addServiceModalOpen, setAddServiceModalOpen] = useState(false);
+  const [serviceType, setServiceType] = useState<'additional_retouch' | 'additional_album'>('additional_retouch');
+  const [serviceQuantity, setServiceQuantity] = useState('');
+  const [serviceFee, setServiceFee] = useState('');
+  const [serviceNote, setServiceNote] = useState('');
 
   const client = id ? getClient(id) : undefined;
   const order = useMemo(() => orders.find((o) => o.clientId === id), [orders, id]);
@@ -122,6 +135,8 @@ export default function ClientDetail() {
   const photos = order ? getPhotos(order.id) : [];
   const summary = order ? getSelectionSummary(order.id) : { albumCount: 0, retouchCount: 0, notes: [] };
   const selectionConfirm = order ? getSelectionConfirm(order.id) : undefined;
+  const selectionReminders = order ? getSelectionReminders(order.id) : [];
+  const additionalServices = order ? getAdditionalServices(order.id) : [];
 
   const totalPages = Math.max(1, Math.ceil(photos.length / PHOTOS_PER_PAGE));
   const pagedPhotos = useMemo(() => {
@@ -231,7 +246,9 @@ export default function ClientDetail() {
       // fallback
     }
     setCopied(true);
+    setShowLinkUpdatedTip(true);
     setTimeout(() => setCopied(false), 2000);
+    setTimeout(() => setShowLinkUpdatedTip(false), 8000);
   };
 
   const handleRegenerateLink = () => {
@@ -247,6 +264,8 @@ export default function ClientDetail() {
       selectToken: token,
       selectExpireAt: now.toISOString(),
     });
+    setShowLinkUpdatedTip(true);
+    setTimeout(() => setShowLinkUpdatedTip(false), 8000);
   };
 
   const handleUpdateStatus = () => {
@@ -276,6 +295,48 @@ export default function ClientDetail() {
     setCurrentNote('');
   };
 
+  const handleAddReminder = () => {
+    if (!order || !currentUser) return;
+    addSelectionReminder({
+      orderId: order.id,
+      channel: reminderChannel,
+      senderId: currentUser.id,
+      senderName: currentUser.name,
+      note: reminderNote || undefined,
+    });
+    setReminderModalOpen(false);
+    setReminderChannel('wechat');
+    setReminderNote('');
+    setShowLinkUpdatedTip(false);
+  };
+
+  const handleAddService = () => {
+    if (!order || !currentUser) return;
+    const qty = parseInt(serviceQuantity) || 0;
+    const fee = parseFloat(serviceFee) || 0;
+    if (qty <= 0 || fee <= 0) return;
+    addAdditionalService({
+      orderId: order.id,
+      type: serviceType,
+      quantity: qty,
+      fee,
+      note: serviceNote || undefined,
+      operatorId: currentUser.id,
+      operatorName: currentUser.name,
+    });
+    updateStatus(
+      order.id,
+      order.status,
+      currentUser.id,
+      `客户追加${serviceType === 'additional_retouch' ? '精修' : '入册'}${qty}张，费用¥${fee}`
+    );
+    setAddServiceModalOpen(false);
+    setServiceType('additional_retouch');
+    setServiceQuantity('');
+    setServiceFee('');
+    setServiceNote('');
+  };
+
   const tabs: { key: TabKey; label: string; icon: React.ReactNode }[] = [
     { key: 'photos', label: '照片管理', icon: <ImageIcon className="w-4 h-4" /> },
     { key: 'progress', label: '制作进度', icon: <Clock className="w-4 h-4" /> },
@@ -303,6 +364,14 @@ export default function ClientDetail() {
 
   return (
     <div className="min-h-full space-y-5">
+      <style>{`
+        @media print {
+          body * { visibility: hidden; }
+          #selection-confirm-print, #selection-confirm-print * { visibility: visible; }
+          #selection-confirm-print { position: absolute; left: 0; top: 0; width: 100%; }
+          .no-print { display: none !important; }
+        }
+      `}</style>
       <Card className="p-5 overflow-hidden relative">
         <div className="absolute top-0 right-0 w-64 h-64 bg-gradient-to-br from-roseGold/10 via-champagne/10 to-transparent rounded-full -translate-y-1/3 translate-x-1/3 blur-2xl" />
         <div className="relative flex flex-col lg:flex-row gap-5 items-start lg:items-center">
@@ -495,6 +564,104 @@ export default function ClientDetail() {
                       </>
                     )}
                   </Button>
+
+                  {showLinkUpdatedTip && (
+                    <div className="mt-3 rounded-xl bg-champagne/20 border border-champagne/40 p-3 flex items-center justify-between gap-2">
+                      <span className="text-sm text-darkGray flex items-center gap-1.5">
+                        <Bell className="w-4 h-4 text-roseGold" />
+                        链接已更新，是否登记提醒？
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          variant="primary"
+                          size="sm"
+                          onClick={() => {
+                            setReminderModalOpen(true);
+                            setShowLinkUpdatedTip(false);
+                          }}
+                          className="h-7 px-3 text-xs"
+                        >
+                          登记提醒
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setShowLinkUpdatedTip(false)}
+                          className="h-7 px-2 text-xs"
+                        >
+                          稍后
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </Card>
+
+                <Card className="p-5">
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="font-semibold text-darkGray flex items-center gap-2">
+                      <Bell className="w-4 h-4 text-roseGold" />
+                      选片提醒
+                    </h3>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => setReminderModalOpen(true)}
+                      className="h-8 px-3 text-xs"
+                    >
+                      <Send className="w-3.5 h-3.5" />
+                      登记提醒
+                    </Button>
+                  </div>
+
+                  {selectionReminders.length > 0 && (
+                    <p className="text-xs text-gray-500 mb-3">
+                      已提醒 {selectionReminders.length} 次
+                    </p>
+                  )}
+
+                  {selectionReminders.length === 0 ? (
+                    <div className="py-8 text-center">
+                      <div className="w-12 h-12 rounded-full bg-warmPink/30 flex items-center justify-center mx-auto mb-3">
+                        <Bell className="w-6 h-6 text-roseGold/40" />
+                      </div>
+                      <p className="text-sm text-gray-400">暂无提醒记录</p>
+                    </div>
+                  ) : (
+                    <div className="space-y-0">
+                      {selectionReminders.map((r, idx) => (
+                        <div key={r.id} className="relative flex gap-3 pb-4">
+                          {idx < selectionReminders.length - 1 && (
+                            <div className="absolute left-[11px] top-6 bottom-0 w-px bg-warmPink/30" />
+                          )}
+                          <div className={cn(
+                            'w-6 h-6 rounded-full flex items-center justify-center shrink-0 text-white text-[10px] font-bold z-10',
+                            r.channel === 'wechat' ? 'bg-forestGreen' :
+                            r.channel === 'phone' ? 'bg-champagne' :
+                            r.channel === 'sms' ? 'bg-roseGold' : 'bg-gray-400'
+                          )}>
+                            {r.channel === 'wechat' ? '微' : r.channel === 'phone' ? '话' : r.channel === 'sms' ? '短' : '他'}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 mb-0.5">
+                              <span className={cn(
+                                'text-xs px-1.5 py-0.5 rounded font-medium',
+                                r.channel === 'wechat' ? 'bg-forestGreen/15 text-forestGreen' :
+                                r.channel === 'phone' ? 'bg-champagne/30 text-amber-700' :
+                                r.channel === 'sms' ? 'bg-roseGold/20 text-roseGold' : 'bg-gray-100 text-gray-600'
+                              )}>
+                                {r.channel === 'wechat' ? '微信' : r.channel === 'phone' ? '电话' : r.channel === 'sms' ? '短信' : '其他'}
+                              </span>
+                              <span className="text-sm text-darkGray font-medium">{r.senderName}</span>
+                              <span className="text-xs text-gray-400">{formatDate(r.createdAt, 'datetime')}</span>
+                            </div>
+                            {r.note && (
+                              <p className="text-sm text-gray-600 mt-0.5">{r.note}</p>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </Card>
               </div>
 
@@ -751,7 +918,7 @@ export default function ClientDetail() {
                 </Card>
               )}
 
-              <Card className="p-5">
+              <Card id="selection-confirm-print" className="p-5">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
                   <div className="flex items-center gap-2">
                     <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-champagne/30 to-warmPink/50 flex items-center justify-center">
@@ -765,6 +932,15 @@ export default function ClientDetail() {
                     </div>
                   </div>
                   <div className="flex items-center gap-3 flex-wrap">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => window.print()}
+                      className="h-8 px-3 text-xs no-print"
+                    >
+                      <Printer className="w-3.5 h-3.5" />
+                      导出打印
+                    </Button>
                     {selectionConfirm ? (
                       <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-forestGreen/15 text-forestGreen text-sm font-medium">
                         <Check className="w-4 h-4" />
@@ -862,6 +1038,65 @@ export default function ClientDetail() {
                         </div>
                       </div>
                     )}
+
+                  <div className="border-t border-warmPink/20 pt-6 mt-6 no-print">
+                    <div className="flex items-center justify-between mb-4">
+                      <h4 className="font-semibold text-darkGray flex items-center gap-2">
+                        <PlusCircle className="w-4 h-4 text-roseGold" />
+                        补选与加修记录
+                      </h4>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => setAddServiceModalOpen(true)}
+                        className="h-8 px-3 text-xs"
+                      >
+                        <PlusCircle className="w-3.5 h-3.5" />
+                        新增加修
+                      </Button>
+                    </div>
+
+                    {additionalServices.length === 0 ? (
+                      <div className="py-8 text-center">
+                        <div className="w-12 h-12 rounded-full bg-warmPink/30 flex items-center justify-center mx-auto mb-3">
+                          <PlusCircle className="w-6 h-6 text-roseGold/40" />
+                        </div>
+                        <p className="text-sm text-gray-400">暂无加修记录</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        {additionalServices.map((svc) => (
+                          <div
+                            key={svc.id}
+                            className="flex items-start gap-3 rounded-xl bg-warmPink/10 p-3"
+                          >
+                            <span className={cn(
+                              'text-xs px-2 py-0.5 rounded font-medium shrink-0',
+                              svc.type === 'additional_retouch'
+                                ? 'bg-champagne/30 text-amber-700'
+                                : 'bg-forestGreen/15 text-forestGreen'
+                            )}>
+                              {svc.type === 'additional_retouch' ? '加修' : '加册'}
+                            </span>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-3 flex-wrap">
+                                <span className="text-sm text-darkGray font-medium">
+                                  {svc.type === 'additional_retouch' ? '精修' : '入册'} {svc.quantity} 张
+                                </span>
+                                <span className="text-sm font-semibold text-roseGold">¥{svc.fee}</span>
+                                <span className="text-xs text-gray-400">
+                                  {svc.operatorName} · {formatDate(svc.createdAt, 'datetime')}
+                                </span>
+                              </div>
+                              {svc.note && (
+                                <p className="text-sm text-gray-500 mt-1">{svc.note}</p>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                   </div>
                 )}
               </Card>
@@ -979,7 +1214,32 @@ export default function ClientDetail() {
                       <span>相册制作</span>
                       <span>已包含</span>
                     </div>
+                    {additionalServices.length > 0 && (
+                      <>
+                        <div className="h-px bg-gradient-to-r from-transparent via-warmPink/30 to-transparent my-2" />
+                        <p className="text-xs text-gray-400 mb-1">加修加册</p>
+                        {additionalServices.map((svc) => (
+                          <div key={svc.id} className="flex justify-between text-gray-600">
+                            <span>
+                              {svc.type === 'additional_retouch' ? '加修精修' : '加册入册'} {svc.quantity} 张
+                            </span>
+                            <span className="text-roseGold">¥{svc.fee}</span>
+                          </div>
+                        ))}
+                        <div className="flex justify-between font-semibold text-darkGray pt-1 border-t border-warmPink/20">
+                          <span>追加费用合计</span>
+                          <span className="text-roseGold">
+                            ¥{additionalServices.reduce((sum, s) => sum + s.fee, 0)}
+                          </span>
+                        </div>
+                      </>
+                    )}
                   </div>
+                  {additionalServices.length > 0 && (
+                    <p className="text-xs text-gray-400 mt-3 text-center">
+                      含追加费用 ¥{additionalServices.reduce((sum, s) => sum + s.fee, 0)}
+                    </p>
+                  )}
                 </Card>
 
                 <Card className="p-6">
@@ -1221,6 +1481,175 @@ export default function ClientDetail() {
             <Button variant="primary" onClick={handleSaveNote}>
               <Check className="w-4 h-4" />
               保存备注
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        open={reminderModalOpen}
+        onClose={() => {
+          setReminderModalOpen(false);
+          setReminderChannel('wechat');
+          setReminderNote('');
+        }}
+        className="max-w-md"
+      >
+        <div className="p-6">
+          <h2 className="text-xl font-bold text-darkGray mb-6 flex items-center gap-2">
+            <Bell className="w-5 h-5 text-roseGold" />
+            登记选片提醒
+          </h2>
+
+          <div className="space-y-4">
+            <div>
+              <p className="text-sm text-gray-500 mb-1.5">发送渠道</p>
+              <Select
+                options={[
+                  { value: 'wechat', label: '微信' },
+                  { value: 'phone', label: '电话' },
+                  { value: 'sms', label: '短信' },
+                  { value: 'other', label: '其他' },
+                ]}
+                value={reminderChannel}
+                onChange={(v) => setReminderChannel(v as 'wechat' | 'phone' | 'sms' | 'other')}
+                placeholder="选择发送渠道"
+              />
+            </div>
+
+            <div>
+              <p className="text-sm text-gray-500 mb-1.5">备注（可选）</p>
+              <textarea
+                value={reminderNote}
+                onChange={(e) => setReminderNote(e.target.value)}
+                placeholder="如：微信已发，客户说明天看"
+                rows={3}
+                className={cn(
+                  'w-full rounded-xl border border-warmPink/50 bg-white px-3 py-2.5',
+                  'text-sm text-darkGray placeholder:text-darkGray/30',
+                  'focus:outline-none focus:border-roseGold focus:ring-2 focus:ring-roseGold/30',
+                  'resize-none transition-all duration-200'
+                )}
+              />
+            </div>
+          </div>
+
+          <div className="flex gap-3 justify-end mt-6">
+            <Button variant="ghost" onClick={() => {
+              setReminderModalOpen(false);
+              setReminderChannel('wechat');
+              setReminderNote('');
+            }}>
+              取消
+            </Button>
+            <Button variant="primary" onClick={handleAddReminder} className="shadow-lg shadow-roseGold/20">
+              <Send className="w-4 h-4" />
+              提交
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        open={addServiceModalOpen}
+        onClose={() => {
+          setAddServiceModalOpen(false);
+          setServiceType('additional_retouch');
+          setServiceQuantity('');
+          setServiceFee('');
+          setServiceNote('');
+        }}
+        className="max-w-md"
+      >
+        <div className="p-6">
+          <h2 className="text-xl font-bold text-darkGray mb-6 flex items-center gap-2">
+            <PlusCircle className="w-5 h-5 text-roseGold" />
+            新增加修/加册
+          </h2>
+
+          <div className="space-y-4">
+            <div>
+              <p className="text-sm text-gray-500 mb-1.5">类型</p>
+              <Select
+                options={[
+                  { value: 'additional_retouch', label: '加修精修' },
+                  { value: 'additional_album', label: '加册入册' },
+                ]}
+                value={serviceType}
+                onChange={(v) => setServiceType(v as 'additional_retouch' | 'additional_album')}
+                placeholder="选择类型"
+              />
+            </div>
+
+            <div>
+              <p className="text-sm text-gray-500 mb-1.5">数量</p>
+              <input
+                type="number"
+                min={1}
+                value={serviceQuantity}
+                onChange={(e) => setServiceQuantity(e.target.value)}
+                placeholder="输入张数"
+                className={cn(
+                  'w-full rounded-xl border border-warmPink/50 bg-white px-3 py-2.5',
+                  'text-sm text-darkGray placeholder:text-darkGray/30',
+                  'focus:outline-none focus:border-roseGold focus:ring-2 focus:ring-roseGold/30',
+                  'transition-all duration-200'
+                )}
+              />
+            </div>
+
+            <div>
+              <p className="text-sm text-gray-500 mb-1.5">费用（元）</p>
+              <input
+                type="number"
+                min={0}
+                value={serviceFee}
+                onChange={(e) => setServiceFee(e.target.value)}
+                placeholder="输入费用"
+                className={cn(
+                  'w-full rounded-xl border border-warmPink/50 bg-white px-3 py-2.5',
+                  'text-sm text-darkGray placeholder:text-darkGray/30',
+                  'focus:outline-none focus:border-roseGold focus:ring-2 focus:ring-roseGold/30',
+                  'transition-all duration-200'
+                )}
+              />
+            </div>
+
+            <div>
+              <p className="text-sm text-gray-500 mb-1.5">备注（可选）</p>
+              <textarea
+                value={serviceNote}
+                onChange={(e) => setServiceNote(e.target.value)}
+                placeholder="如：客户追加5张精修，因婚礼追加嘉宾照"
+                rows={3}
+                className={cn(
+                  'w-full rounded-xl border border-warmPink/50 bg-white px-3 py-2.5',
+                  'text-sm text-darkGray placeholder:text-darkGray/30',
+                  'focus:outline-none focus:border-roseGold focus:ring-2 focus:ring-roseGold/30',
+                  'resize-none transition-all duration-200'
+                )}
+              />
+            </div>
+          </div>
+
+          <div className="flex gap-3 justify-end mt-6">
+            <Button variant="ghost" onClick={() => {
+              setAddServiceModalOpen(false);
+              setServiceType('additional_retouch');
+              setServiceQuantity('');
+              setServiceFee('');
+              setServiceNote('');
+            }}>
+              取消
+            </Button>
+            <Button
+              variant="primary"
+              onClick={handleAddService}
+              disabled={!serviceQuantity || !serviceFee}
+              className="shadow-lg shadow-roseGold/20"
+            >
+              <PlusCircle className="w-4 h-4" />
+              提交
             </Button>
           </div>
         </div>
